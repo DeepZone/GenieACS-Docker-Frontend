@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+{% block title %}Gerätedetails{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-center">
+      <h1 class="h4 mb-0">Gerätedetails</h1>
+      <a href="{{ url_for('devices') }}" class="btn btn-outline-secondary btn-sm">Zurück zur Geräteliste</a>
+    </div>
+  </div>
+
+  {% if detail_error %}
+    <div class="col-12">
+      <div class="alert alert-warning mb-0" role="alert">{{ detail_error }}</div>
+    </div>
+  {% elif device %}
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 text-muted mb-3">Client</h2>
+          <dl class="row mb-0">
+            <dt class="col-sm-4">Status</dt>
+            <dd class="col-sm-8">
+              {% if device.is_online %}
+                <span class="badge text-bg-success">Online</span>
+              {% else %}
+                <span class="badge text-bg-secondary">Offline</span>
+              {% endif %}
+            </dd>
+            <dt class="col-sm-4">Device-ID</dt>
+            <dd class="col-sm-8">{{ device.device_id }}</dd>
+            <dt class="col-sm-4">Hersteller</dt>
+            <dd class="col-sm-8">{{ device.manufacturer }}</dd>
+            <dt class="col-sm-4">Modell</dt>
+            <dd class="col-sm-8">{{ device.model }}</dd>
+            <dt class="col-sm-4">Produktklasse</dt>
+            <dd class="col-sm-8">{{ device.product_class }}</dd>
+            <dt class="col-sm-4">Seriennummer</dt>
+            <dd class="col-sm-8">{{ device.serial_number }}</dd>
+            <dt class="col-sm-4">Last Inform</dt>
+            <dd class="col-sm-8">
+              {% if device.last_inform %}
+                {{ device.last_inform.strftime('%Y-%m-%d %H:%M:%S') }} UTC
+              {% else %}
+                -
+              {% endif %}
+            </dd>
+          </dl>
+          <p class="small text-muted mt-3 mb-0">Online-Fenster: {{ online_window_minutes }} Minuten</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 text-muted mb-3">Internetanschluss</h2>
+          <dl class="row mb-0">
+            <dt class="col-sm-5">Erkannte Klasse</dt>
+            <dd class="col-sm-7">{{ device.connection_class }}</dd>
+            <dt class="col-sm-5">Downstream gesamt</dt>
+            <dd class="col-sm-7">{{ device.total_rx_bytes|bytes_to_human }}</dd>
+            <dt class="col-sm-5">Upstream gesamt</dt>
+            <dd class="col-sm-7">{{ device.total_tx_bytes|bytes_to_human }}</dd>
+            <dt class="col-sm-5">Summierter Traffic</dt>
+            <dd class="col-sm-7">{{ (device.total_rx_bytes + device.total_tx_bytes)|bytes_to_human }}</dd>
+          </dl>
+
+          <hr>
+          <h2 class="h6 text-muted mb-2">WLAN</h2>
+          <p class="mb-0 text-muted">WLAN-relevante Informationen werden aus dem ACS-Gerätebaum ausgelesen und in der nächsten Iteration detaillierter dargestellt.</p>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -52,7 +52,11 @@
                         <span class="badge text-bg-secondary">Offline</span>
                       {% endif %}
                     </td>
-                    <td>{{ device.device_id }}</td>
+                    <td>
+                      <a href="{{ url_for('device_detail', device_id=device.device_id) }}" class="text-decoration-none">
+                        {{ device.device_id }}
+                      </a>
+                    </td>
                     <td>{{ device.manufacturer }}</td>
                     <td>{{ device.model }}</td>
                     <td>{{ device.product_class }}</td>

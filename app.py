@@ -200,6 +200,33 @@ def devices():
     )
 
 
+@app.route("/devices/<device_id>")
+@login_required
+def device_detail(device_id: str):
+    config = AppConfig.query.first()
+    detail_error = None
+    device = None
+    if config and config.acs_api_url:
+        try:
+            device = load_device_detail(config.acs_api_url.rstrip("/"), device_id)
+            if device is None:
+                detail_error = "Gerät wurde im ACS nicht gefunden."
+        except requests.RequestException:
+            detail_error = "ACS-API ist derzeit nicht erreichbar."
+        except ValueError:
+            detail_error = "ACS-Antwort konnte nicht verarbeitet werden."
+    else:
+        detail_error = "Keine ACS-API-URL konfiguriert."
+
+    return render_template(
+        "device_detail.html",
+        config=config,
+        device=device,
+        detail_error=detail_error,
+        online_window_minutes=ONLINE_WINDOW_MINUTES,
+    )
+
+
 def load_dashboard_summary(acs_api_url: str) -> dict:
     active_since = datetime.now(UTC).replace(microsecond=0)
     active_since = active_since.timestamp() - (24 * 60 * 60)
@@ -300,6 +327,49 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
         )
     )
     return rows
+
+
+def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
+    projection_fields = [
+        "_id",
+        "_lastInform",
+        "DeviceID.Manufacturer",
+        "DeviceID.ProductClass",
+        "DeviceID.SerialNumber",
+        "DeviceInfo.ModelName",
+        "InternetGatewayDevice.DeviceInfo.ModelName",
+        "InternetGatewayDevice.WANDevice",
+        "InternetGatewayDevice.LANDevice",
+    ]
+    projection = quote(",".join(projection_fields))
+    encoded_id = quote(device_id, safe="")
+    url = f"{acs_api_url}/devices/{encoded_id}?projection={projection}"
+
+    response = requests.get(url, timeout=10)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    device = response.json()
+    if not isinstance(device, dict):
+        raise ValueError("Unexpected ACS response")
+
+    last_inform = parse_acs_datetime(device.get("_lastInform"))
+    now = datetime.now(UTC)
+    is_online = bool(last_inform and now - last_inform <= timedelta(minutes=ONLINE_WINDOW_MINUTES))
+    rx, tx = extract_traffic_bytes(device)
+
+    return {
+        "device_id": device.get("_id", "unbekannt"),
+        "manufacturer": get_device_identity_value(device, "manufacturer"),
+        "product_class": get_device_identity_value(device, "product_class"),
+        "serial_number": get_device_identity_value(device, "serial_number"),
+        "model": get_device_identity_value(device, "model"),
+        "last_inform": last_inform,
+        "is_online": is_online,
+        "connection_class": classify_connection(device),
+        "total_rx_bytes": int(rx),
+        "total_tx_bytes": int(tx),
+    }
 
 
 def get_device_identity_value(device: dict, field_name: str) -> str:

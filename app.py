@@ -1,6 +1,6 @@
 import os
 from collections.abc import Iterable
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
@@ -21,6 +21,7 @@ os.makedirs("/data", exist_ok=True)
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
+ONLINE_WINDOW_MINUTES = 15
 
 
 @app.template_filter("bytes_to_human")
@@ -168,6 +169,37 @@ def dashboard():
     )
 
 
+@app.route("/devices")
+@login_required
+def devices():
+    config = AppConfig.query.first()
+    status_filter = request.args.get("status", "all").strip().lower()
+    if status_filter not in {"all", "online", "offline"}:
+        status_filter = "all"
+
+    device_rows: list[dict] = []
+    devices_error = None
+
+    if config and config.acs_api_url:
+        try:
+            device_rows = load_devices(config.acs_api_url.rstrip("/"), status_filter)
+        except requests.RequestException:
+            devices_error = "ACS-API ist derzeit nicht erreichbar."
+        except ValueError:
+            devices_error = "ACS-Antwort konnte nicht verarbeitet werden."
+    else:
+        devices_error = "Keine ACS-API-URL konfiguriert."
+
+    return render_template(
+        "devices.html",
+        config=config,
+        devices=device_rows,
+        status_filter=status_filter,
+        devices_error=devices_error,
+        online_window_minutes=ONLINE_WINDOW_MINUTES,
+    )
+
+
 def load_dashboard_summary(acs_api_url: str) -> dict:
     active_since = datetime.now(UTC).replace(microsecond=0)
     active_since = active_since.timestamp() - (24 * 60 * 60)
@@ -215,6 +247,74 @@ def load_dashboard_summary(acs_api_url: str) -> dict:
         "total_tx_bytes": int(total_tx_bytes),
         "total_traffic_bytes": int(total_rx_bytes + total_tx_bytes),
     }
+
+
+def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
+    projection_fields = [
+        "_id",
+        "_lastInform",
+        "DeviceID.Manufacturer",
+        "DeviceID.ProductClass",
+        "DeviceID.SerialNumber",
+    ]
+    projection = quote(",".join(projection_fields))
+    url = f"{acs_api_url}/devices/?projection={projection}"
+
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    devices = response.json()
+    if not isinstance(devices, list):
+        raise ValueError("Unexpected ACS response")
+
+    now = datetime.now(UTC)
+    rows = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        last_inform = parse_acs_datetime(device.get("_lastInform"))
+        is_online = bool(last_inform and now - last_inform <= timedelta(minutes=ONLINE_WINDOW_MINUTES))
+        if status_filter == "online" and not is_online:
+            continue
+        if status_filter == "offline" and is_online:
+            continue
+
+        rows.append(
+            {
+                "device_id": device.get("_id", "unbekannt"),
+                "manufacturer": get_device_id_value(device, "Manufacturer"),
+                "product_class": get_device_id_value(device, "ProductClass"),
+                "serial_number": get_device_id_value(device, "SerialNumber"),
+                "last_inform": last_inform,
+                "is_online": is_online,
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            not row["is_online"],
+            row["last_inform"] is None,
+            -(row["last_inform"].timestamp() if row["last_inform"] else 0),
+        )
+    )
+    return rows
+
+
+def get_device_id_value(device: dict, field_name: str) -> str:
+    value = device.get("DeviceID", {}).get(field_name, {}).get("_value")
+    return str(value).strip() if value is not None and str(value).strip() else "-"
+
+
+def parse_acs_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def iter_parameter_values(node: object, parameter_names: set[str]) -> Iterable[tuple[str, object]]:

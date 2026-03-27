@@ -36,6 +36,7 @@
                   <th>Status</th>
                   <th>Device-ID</th>
                   <th>Hersteller</th>
+                  <th>Modell</th>
                   <th>Produktklasse</th>
                   <th>Seriennummer</th>
                   <th>Last Inform (UTC)</th>
@@ -53,6 +54,7 @@
                     </td>
                     <td>{{ device.device_id }}</td>
                     <td>{{ device.manufacturer }}</td>
+                    <td>{{ device.model }}</td>
                     <td>{{ device.product_class }}</td>
                     <td>{{ device.serial_number }}</td>
                     <td>
@@ -65,7 +67,7 @@
                   </tr>
                 {% else %}
                   <tr>
-                    <td colspan="6" class="text-center text-muted py-4">Keine Geräte für den gewählten Filter gefunden.</td>
+                    <td colspan="7" class="text-center text-muted py-4">Keine Geräte für den gewählten Filter gefunden.</td>
                   </tr>
                 {% endfor %}
               </tbody>

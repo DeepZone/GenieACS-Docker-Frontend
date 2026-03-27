@@ -256,6 +256,8 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
         "DeviceID.Manufacturer",
         "DeviceID.ProductClass",
         "DeviceID.SerialNumber",
+        "DeviceInfo.ModelName",
+        "InternetGatewayDevice.DeviceInfo.ModelName",
     ]
     projection = quote(",".join(projection_fields))
     url = f"{acs_api_url}/devices/?projection={projection}"
@@ -281,9 +283,10 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
         rows.append(
             {
                 "device_id": device.get("_id", "unbekannt"),
-                "manufacturer": get_device_id_value(device, "Manufacturer"),
-                "product_class": get_device_id_value(device, "ProductClass"),
-                "serial_number": get_device_id_value(device, "SerialNumber"),
+                "manufacturer": get_device_identity_value(device, "manufacturer"),
+                "product_class": get_device_identity_value(device, "product_class"),
+                "serial_number": get_device_identity_value(device, "serial_number"),
+                "model": get_device_identity_value(device, "model"),
                 "last_inform": last_inform,
                 "is_online": is_online,
             }
@@ -299,9 +302,40 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
     return rows
 
 
-def get_device_id_value(device: dict, field_name: str) -> str:
-    value = device.get("DeviceID", {}).get(field_name, {}).get("_value")
-    return str(value).strip() if value is not None and str(value).strip() else "-"
+def get_device_identity_value(device: dict, field_name: str) -> str:
+    value_paths: dict[str, list[list[str]]] = {
+        "manufacturer": [["DeviceID", "Manufacturer"], ["DeviceInfo", "Manufacturer"]],
+        "product_class": [["DeviceID", "ProductClass"], ["DeviceInfo", "ProductClass"]],
+        "serial_number": [["DeviceID", "SerialNumber"], ["DeviceInfo", "SerialNumber"]],
+        "model": [
+            ["DeviceInfo", "ModelName"],
+            ["InternetGatewayDevice", "DeviceInfo", "ModelName"],
+        ],
+    }
+
+    for path in value_paths.get(field_name, []):
+        value = get_nested_acs_value(device, path)
+        if value:
+            return value
+
+    return "-"
+
+
+def get_nested_acs_value(device: dict, path: list[str]) -> str | None:
+    node: object = device
+    for segment in path:
+        if not isinstance(node, dict) or segment not in node:
+            return None
+        node = node[segment]
+
+    if isinstance(node, dict):
+        if "_value" in node and node["_value"] is not None:
+            value = str(node["_value"]).strip()
+            return value or None
+        return None
+
+    value = str(node).strip()
+    return value or None
 
 
 def parse_acs_datetime(value: object) -> datetime | None:

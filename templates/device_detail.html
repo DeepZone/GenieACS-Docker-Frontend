@@ -58,76 +58,6 @@
           <dl class="row mb-0">
             <dt class="col-sm-5">Erkannte Klasse</dt>
             <dd class="col-sm-7">{{ device.connection_class }}</dd>
-          </dl>
-
-          <hr>
-          <h3 class="h6 text-muted mb-2">WAN (gemeinsam)</h3>
-          <dl class="row mb-0">
-            <dt class="col-sm-5">WANAccessType</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.wan_access_type }}</dd>
-            <dt class="col-sm-5">LinkType</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.link_type }}</dd>
-            <dt class="col-sm-5">Verbindungsstatus</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.connection_status }}</dd>
-            <dt class="col-sm-5">Verbindungstyp</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.connection_type }}</dd>
-            <dt class="col-sm-5">Internet-Linktyp</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.internet_link_type }}</dd>
-            <dt class="col-sm-5">Physical Link</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.physical_link_status }}</dd>
-            <dt class="col-sm-5">Externe IP</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.external_ip }}</dd>
-            <dt class="col-sm-5">Gateway</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.default_gateway }}</dd>
-            <dt class="col-sm-5">DNS-Server</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.dns_servers }}</dd>
-            <dt class="col-sm-5">NAT aktiv</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.nat_enabled }}</dd>
-            <dt class="col-sm-5">Leitungsprofil (Down/Up)</dt>
-            <dd class="col-sm-7">{{ device.wan_common_info.downstream_max_rate }} / {{ device.wan_common_info.upstream_max_rate }}</dd>
-          </dl>
-
-          <hr>
-          <h3 class="h6 text-muted mb-2">DSL (spezifisch)</h3>
-          <dl class="row mb-0">
-            <dt class="col-sm-5">DSL-Status</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.status }}</dd>
-            <dt class="col-sm-5">Standard</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.standard_used }}</dd>
-            <dt class="col-sm-5">Profil</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.current_profile }}</dd>
-            <dt class="col-sm-5">Encapsulation</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.link_encapsulation_used }}</dd>
-            <dt class="col-sm-5">DataPath</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.data_path }}</dd>
-            <dt class="col-sm-5">Aktuelle Datenrate (Down/Up)</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.downstream_current_rate }} / {{ device.wan_dsl_info.upstream_current_rate }}</dd>
-            <dt class="col-sm-5">DSL Max-Rate (Down/Up)</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.downstream_max_rate }} / {{ device.wan_dsl_info.upstream_max_rate }}</dd>
-            <dt class="col-sm-5">Noise Margin (Down/Up)</dt>
-            <dd class="col-sm-7">{{ device.wan_dsl_info.downstream_noise_margin }} / {{ device.wan_dsl_info.upstream_noise_margin }}</dd>
-          </dl>
-
-          <hr>
-          <h3 class="h6 text-muted mb-2">Cable (spezifisch)</h3>
-          <dl class="row mb-0">
-            <dt class="col-sm-5">WANAccessType</dt>
-            <dd class="col-sm-7">{{ device.wan_cable_info.wan_access_type }}</dd>
-            <dt class="col-sm-5">Physical Link</dt>
-            <dd class="col-sm-7">{{ device.wan_cable_info.physical_link_status }}</dd>
-            <dt class="col-sm-5">Current Max Speed (Down/Up)</dt>
-            <dd class="col-sm-7">{{ device.wan_cable_info.downstream_current_max_speed }} / {{ device.wan_cable_info.upstream_current_max_speed }}</dd>
-            <dt class="col-sm-5">Utilization (Down/Up)</dt>
-            <dd class="col-sm-7">{{ device.wan_cable_info.downstream_utilization }} / {{ device.wan_cable_info.upstream_utilization }}</dd>
-          </dl>
-
-          <hr>
-          <h3 class="h6 text-muted mb-2">Kompatibilität (alt)</h3>
-          <dl class="row mb-0">
-            <dt class="col-sm-5">Verbindungsname</dt>
-            <dd class="col-sm-7">{{ device.wan_info.connection_name }}</dd>
-            <dt class="col-sm-5">Uptime (Sek.)</dt>
-            <dd class="col-sm-7">{{ device.wan_info.uptime_seconds }}</dd>
             <dt class="col-sm-5">Downstream gesamt</dt>
             <dd class="col-sm-7">{{ device.total_rx_bytes|bytes_to_human }}</dd>
             <dt class="col-sm-5">Upstream gesamt</dt>
@@ -135,6 +65,21 @@
             <dt class="col-sm-5">Summierter Traffic</dt>
             <dd class="col-sm-7">{{ (device.total_rx_bytes + device.total_tx_bytes)|bytes_to_human }}</dd>
           </dl>
+          {% if device.internet_sections %}
+            {% for section in device.internet_sections %}
+              <hr>
+              <h3 class="h6 text-muted mb-2">{{ section.title }}</h3>
+              <dl class="row mb-0">
+                {% for row in section.rows %}
+                  <dt class="col-sm-5">{{ row.label }}</dt>
+                  <dd class="col-sm-7">{{ row.value }}</dd>
+                {% endfor %}
+              </dl>
+            {% endfor %}
+          {% else %}
+            <hr>
+            <p class="mb-0 text-muted">Keine WAN-/Anschlussdaten im ACS-Gerätebaum gefunden.</p>
+          {% endif %}
 
           <hr>
           <h2 class="h6 text-muted mb-2">WLAN</h2>

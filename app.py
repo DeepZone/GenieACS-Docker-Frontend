@@ -363,6 +363,9 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
     is_online = bool(last_inform and now - last_inform <= timedelta(minutes=ONLINE_WINDOW_MINUTES))
     rx, tx = extract_traffic_bytes(device)
     wan_info = extract_wan_info(device)
+    wan_common_info = extract_wan_common_info(device)
+    wan_dsl_info = extract_wan_dsl_info(device)
+    wan_cable_info = extract_wan_cable_info(device)
     wifi_radios = extract_wifi_radios(device)
 
     return {
@@ -377,6 +380,9 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
         "total_rx_bytes": int(rx),
         "total_tx_bytes": int(tx),
         "wan_info": wan_info,
+        "wan_common_info": wan_common_info,
+        "wan_dsl_info": wan_dsl_info,
+        "wan_cable_info": wan_cable_info,
         "wifi_radios": wifi_radios,
     }
 
@@ -501,12 +507,6 @@ def extract_wan_info(device: dict) -> dict[str, str]:
         if value not in (None, "")
     }
 
-    def format_rate(raw_value: object) -> str:
-        numeric = to_decimal(raw_value)
-        if numeric is None:
-            return "-"
-        return f"{int(numeric):,} bit/s".replace(",", ".")
-
     return {
         "status": str(values.get("ConnectionStatus", "-")),
         "external_ip": str(values.get("ExternalIPAddress", "-")),
@@ -516,11 +516,123 @@ def extract_wan_info(device: dict) -> dict[str, str]:
         "connection_type": str(values.get("ConnectionType", "-")),
         "nat_enabled": str(values.get("NATEnabled", "-")),
         "uptime_seconds": str(values.get("Uptime", "-")),
-        "downstream_max_rate": format_rate(values.get("Layer1DownstreamMaxBitRate")),
-        "upstream_max_rate": format_rate(values.get("Layer1UpstreamMaxBitRate")),
-        "downstream_current_rate": format_rate(values.get("DownstreamCurrRate")),
-        "upstream_current_rate": format_rate(values.get("UpstreamCurrRate")),
+        "downstream_max_rate": format_bitrate(values.get("Layer1DownstreamMaxBitRate")),
+        "upstream_max_rate": format_bitrate(values.get("Layer1UpstreamMaxBitRate")),
+        "downstream_current_rate": format_bitrate(values.get("DownstreamCurrRate")),
+        "upstream_current_rate": format_bitrate(values.get("UpstreamCurrRate")),
     }
+
+
+def extract_wan_common_info(device: dict) -> dict[str, str]:
+    common_params = {
+        "WANAccessType",
+        "LinkType",
+        "Type",
+        "ConnectionStatus",
+        "ConnectionType",
+        "ExternalIPAddress",
+        "DefaultGateway",
+        "DNSServers",
+        "NATEnabled",
+        "PhysicalLinkStatus",
+        "Layer1UpstreamMaxBitRate",
+        "Layer1DownstreamMaxBitRate",
+        "X_AVM-DE_InternetConnectionLinkType",
+    }
+    values = {
+        key: value
+        for key, value in iter_parameter_values(device, common_params)
+        if value not in (None, "")
+    }
+
+    return {
+        "wan_access_type": str(values.get("WANAccessType", "-")),
+        "link_type": str(values.get("LinkType", values.get("Type", "-"))),
+        "connection_status": str(values.get("ConnectionStatus", "-")),
+        "connection_type": str(values.get("ConnectionType", "-")),
+        "internet_link_type": str(values.get("X_AVM-DE_InternetConnectionLinkType", "-")),
+        "physical_link_status": str(values.get("PhysicalLinkStatus", "-")),
+        "external_ip": str(values.get("ExternalIPAddress", "-")),
+        "default_gateway": str(values.get("DefaultGateway", "-")),
+        "dns_servers": str(values.get("DNSServers", "-")),
+        "nat_enabled": str(values.get("NATEnabled", "-")),
+        "downstream_max_rate": format_bitrate(values.get("Layer1DownstreamMaxBitRate")),
+        "upstream_max_rate": format_bitrate(values.get("Layer1UpstreamMaxBitRate")),
+    }
+
+
+def extract_wan_dsl_info(device: dict) -> dict[str, str]:
+    dsl_params = {
+        "Status",
+        "StandardUsed",
+        "CurrentProfile",
+        "UpstreamCurrRate",
+        "DownstreamCurrRate",
+        "UpstreamMaxRate",
+        "DownstreamMaxRate",
+        "UpstreamNoiseMargin",
+        "DownstreamNoiseMargin",
+        "LinkEncapsulationUsed",
+        "DataPath",
+    }
+    values = {
+        key: value
+        for key, value in iter_parameter_values(device, dsl_params)
+        if value not in (None, "")
+    }
+
+    return {
+        "status": str(values.get("Status", "-")),
+        "standard_used": str(values.get("StandardUsed", "-")),
+        "current_profile": str(values.get("CurrentProfile", "-")),
+        "link_encapsulation_used": str(values.get("LinkEncapsulationUsed", "-")),
+        "data_path": str(values.get("DataPath", "-")),
+        "downstream_current_rate": format_bitrate(values.get("DownstreamCurrRate")),
+        "upstream_current_rate": format_bitrate(values.get("UpstreamCurrRate")),
+        "downstream_max_rate": format_bitrate(values.get("DownstreamMaxRate")),
+        "upstream_max_rate": format_bitrate(values.get("UpstreamMaxRate")),
+        "downstream_noise_margin": str(values.get("DownstreamNoiseMargin", "-")),
+        "upstream_noise_margin": str(values.get("UpstreamNoiseMargin", "-")),
+    }
+
+
+def extract_wan_cable_info(device: dict) -> dict[str, str]:
+    cable_params = {
+        "X_AVM-DE_DownstreamCurrentMaxSpeed",
+        "X_AVM-DE_UpstreamCurrentMaxSpeed",
+        "X_AVM-DE_DownstreamCurrentUtilization",
+        "X_AVM-DE_UpstreamCurrentUtilization",
+        "PhysicalLinkStatus",
+        "WANAccessType",
+    }
+    values = {
+        key: value
+        for key, value in iter_parameter_values(device, cable_params)
+        if value not in (None, "")
+    }
+
+    return {
+        "wan_access_type": str(values.get("WANAccessType", "-")),
+        "physical_link_status": str(values.get("PhysicalLinkStatus", "-")),
+        "downstream_current_max_speed": format_byte_rate(values.get("X_AVM-DE_DownstreamCurrentMaxSpeed")),
+        "upstream_current_max_speed": format_byte_rate(values.get("X_AVM-DE_UpstreamCurrentMaxSpeed")),
+        "downstream_utilization": str(values.get("X_AVM-DE_DownstreamCurrentUtilization", "-")),
+        "upstream_utilization": str(values.get("X_AVM-DE_UpstreamCurrentUtilization", "-")),
+    }
+
+
+def format_bitrate(raw_value: object) -> str:
+    numeric = to_decimal(raw_value)
+    if numeric is None:
+        return "-"
+    return f"{int(numeric):,} bit/s".replace(",", ".")
+
+
+def format_byte_rate(raw_value: object) -> str:
+    numeric = to_decimal(raw_value)
+    if numeric is None:
+        return "-"
+    return f"{int(numeric):,} B/s".replace(",", ".")
 
 
 def extract_wifi_radios(device: dict) -> list[dict[str, str]]:

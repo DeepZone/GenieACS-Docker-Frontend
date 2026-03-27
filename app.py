@@ -1,3 +1,4 @@
+import json
 import os
 from collections.abc import Iterable
 from datetime import datetime, UTC, timedelta
@@ -342,14 +343,18 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
         "InternetGatewayDevice.LANDevice",
     ]
     projection = quote(",".join(projection_fields))
-    encoded_id = quote(device_id, safe="")
-    url = f"{acs_api_url}/devices/{encoded_id}?projection={projection}"
+    query = quote(json.dumps({"_id": device_id}, separators=(",", ":")))
+    url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
 
     response = requests.get(url, timeout=10)
-    if response.status_code == 404:
-        return None
     response.raise_for_status()
-    device = response.json()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected ACS response")
+    if not payload:
+        return None
+
+    device = payload[0]
     if not isinstance(device, dict):
         raise ValueError("Unexpected ACS response")
 

@@ -366,7 +366,79 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
     wan_common_info = extract_wan_common_info(device)
     wan_dsl_info = extract_wan_dsl_info(device)
     wan_cable_info = extract_wan_cable_info(device)
+    connection_class = classify_connection(device)
     wifi_radios = extract_wifi_radios(device)
+
+    wan_common_rows = build_info_rows(
+        wan_common_info,
+        [
+            ("wan_access_type", "WANAccessType"),
+            ("link_type", "LinkType"),
+            ("connection_status", "Verbindungsstatus"),
+            ("connection_type", "Verbindungstyp"),
+            ("internet_link_type", "Internet-Linktyp"),
+            ("physical_link_status", "Physical Link"),
+            ("external_ip", "Externe IP"),
+            ("default_gateway", "Gateway"),
+            ("dns_servers", "DNS-Server"),
+            ("nat_enabled", "NAT aktiv"),
+            ("downstream_max_rate", "Max-Datenrate Downstream"),
+            ("upstream_max_rate", "Max-Datenrate Upstream"),
+        ],
+    )
+    wan_dsl_rows = build_info_rows(
+        wan_dsl_info,
+        [
+            ("status", "DSL-Status"),
+            ("standard_used", "Standard"),
+            ("current_profile", "Profil"),
+            ("link_encapsulation_used", "Encapsulation"),
+            ("data_path", "DataPath"),
+            ("downstream_current_rate", "Aktuelle Datenrate Downstream"),
+            ("upstream_current_rate", "Aktuelle Datenrate Upstream"),
+            ("downstream_max_rate", "DSL Max-Rate Downstream"),
+            ("upstream_max_rate", "DSL Max-Rate Upstream"),
+            ("downstream_noise_margin", "Noise Margin Downstream"),
+            ("upstream_noise_margin", "Noise Margin Upstream"),
+        ],
+    )
+    wan_cable_rows = build_info_rows(
+        wan_cable_info,
+        [
+            ("wan_access_type", "WANAccessType"),
+            ("physical_link_status", "Physical Link"),
+            ("downstream_current_max_speed", "Current Max Speed Downstream"),
+            ("upstream_current_max_speed", "Current Max Speed Upstream"),
+            ("downstream_utilization", "Utilization Downstream"),
+            ("upstream_utilization", "Utilization Upstream"),
+        ],
+    )
+    legacy_rows = build_info_rows(
+        wan_info,
+        [
+            ("connection_name", "Verbindungsname"),
+            ("uptime_seconds", "Uptime (Sek.)"),
+            ("downstream_current_rate", "Downstream aktuell"),
+            ("upstream_current_rate", "Upstream aktuell"),
+            ("downstream_max_rate", "Max Downstream"),
+            ("upstream_max_rate", "Max Upstream"),
+        ],
+    )
+
+    internet_sections: list[dict[str, object]] = []
+    if wan_common_rows:
+        internet_sections.append({"title": "WAN (gemeinsam)", "rows": wan_common_rows})
+    if connection_class == "DSL" and wan_dsl_rows:
+        internet_sections.append({"title": "DSL (spezifisch)", "rows": wan_dsl_rows})
+    elif connection_class == "Cable" and wan_cable_rows:
+        internet_sections.append({"title": "Cable (spezifisch)", "rows": wan_cable_rows})
+    else:
+        if wan_dsl_rows:
+            internet_sections.append({"title": "DSL (spezifisch)", "rows": wan_dsl_rows})
+        if wan_cable_rows:
+            internet_sections.append({"title": "Cable (spezifisch)", "rows": wan_cable_rows})
+    if legacy_rows:
+        internet_sections.append({"title": "WAN (Kompatibilität)", "rows": legacy_rows})
 
     return {
         "device_id": device.get("_id", "unbekannt"),
@@ -376,15 +448,25 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
         "model": get_device_identity_value(device, "model"),
         "last_inform": last_inform,
         "is_online": is_online,
-        "connection_class": classify_connection(device),
+        "connection_class": connection_class,
         "total_rx_bytes": int(rx),
         "total_tx_bytes": int(tx),
-        "wan_info": wan_info,
-        "wan_common_info": wan_common_info,
-        "wan_dsl_info": wan_dsl_info,
-        "wan_cable_info": wan_cable_info,
+        "internet_sections": internet_sections,
         "wifi_radios": wifi_radios,
     }
+
+
+def build_info_rows(info: dict[str, str], field_definitions: list[tuple[str, str]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for key, label in field_definitions:
+        raw_value = info.get(key)
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value or value == "-":
+            continue
+        rows.append({"label": label, "value": value})
+    return rows
 
 
 def get_device_identity_value(device: dict, field_name: str) -> str:

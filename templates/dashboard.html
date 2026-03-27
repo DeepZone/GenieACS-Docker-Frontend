@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-12">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h1 class="h4">Willkommen, {{ current_user.username }}</h1>
+        <p class="mb-1"><strong>Rolle:</strong> {{ current_user.role }}</p>
+        <p class="mb-0"><strong>Aktuelle ACS-API-URL:</strong> {{ config.acs_api_url if config else 'nicht gesetzt' }}</p>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

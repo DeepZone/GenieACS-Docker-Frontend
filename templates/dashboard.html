@@ -11,5 +11,82 @@
       </div>
     </div>
   </div>
+
+  {% if dashboard_error %}
+  <div class="col-12">
+    <div class="alert alert-warning mb-0" role="alert">
+      {{ dashboard_error }}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if summary %}
+  <div class="col-12 col-md-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h6 text-muted mb-2">Aktive Geräte ({{ summary.active_window_hours }}h)</h2>
+        <p class="display-6 mb-0">{{ summary.active_count }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h6 text-muted mb-2">Gesamt Downstream</h2>
+        <p class="display-6 mb-0">{{ summary.total_rx_bytes|bytes_to_human }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-md-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <h2 class="h6 text-muted mb-2">Gesamt Upstream</h2>
+        <p class="display-6 mb-0">{{ summary.total_tx_bytes|bytes_to_human }}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h2 class="h5 mb-3">Anschlussklassen (TR-069/FRITZ!Box)</h2>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Klasse</th>
+                <th class="text-end">Anzahl aktive Geräte</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Cable</td>
+                <td class="text-end">{{ summary.class_counts.Cable }}</td>
+              </tr>
+              <tr>
+                <td>DSL</td>
+                <td class="text-end">{{ summary.class_counts.DSL }}</td>
+              </tr>
+              <tr>
+                <td>Fiber</td>
+                <td class="text-end">{{ summary.class_counts.Fiber }}</td>
+              </tr>
+              <tr>
+                <td>Unbekannt</td>
+                <td class="text-end">{{ summary.class_counts.Unknown }}</td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <th>Summierter Traffic (Up+Down)</th>
+                <th class="text-end">{{ summary.total_traffic_bytes|bytes_to_human }}</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

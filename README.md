@@ -1,1 +1,46 @@
-# GenieACS-Docker-Frontend
+# GenieACS Docker Frontend
+
+Docker-basierte Flask-Webanwendung als einfaches Frontend für eine GenieACS-Umgebung.
+
+## Features
+
+- Login-geschützte Oberfläche (Bootstrap 5)
+- Initiales Online-Setup: Wenn kein Benutzer existiert, wird automatisch die Admin-Erstellung angezeigt
+- Benutzerverwaltung mit Rollen (`admin`, `editor`, `viewer`)
+- Web-Konfiguration der ACS-API-URL
+- Persistente SQLite-Datenbank im Docker-Volume (`./data`)
+
+## Starten
+
+```bash
+docker compose up --build
+```
+
+Danach ist die Oberfläche verfügbar unter: `http://localhost:8080`
+
+## Ersteinrichtung
+
+Beim ersten Start (leere Datenbank) wird die Seite `/setup` angezeigt:
+
+1. Admin-Benutzername setzen
+2. Passwort setzen
+3. ACS-API-URL hinterlegen
+
+Nach dem Speichern kann man sich normal einloggen.
+
+## Benutzerrollen
+
+- **admin**: Darf Benutzer verwalten und ACS-API-URL ändern
+- **editor**: Kann sich anmelden und Dashboard sehen
+- **viewer**: Kann sich anmelden und Dashboard sehen
+
+## Konfiguration
+
+Umgebungsvariablen in `docker-compose.yml`:
+
+- `SECRET_KEY`: Session-Sicherheit (in Produktion ändern)
+- `DATABASE_URL`: SQLAlchemy-Connection-String
+
+## Hinweis
+
+Dieses Projekt stellt ein administratives Frontend bereit und kann als Grundlage für weitere GenieACS-API-Integrationen genutzt werden.

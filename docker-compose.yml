@@ -1,0 +1,12 @@
+services:
+  genieacs-frontend:
+    build: .
+    container_name: genieacs-frontend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - SECRET_KEY=please-change-me
+      - DATABASE_URL=sqlite:////data/app.db
+    restart: unless-stopped

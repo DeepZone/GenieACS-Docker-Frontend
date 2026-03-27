@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}Einstellungen{% endblock %}
+{% block content %}
+<div class="row">
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h1 class="h4 mb-3">ACS-Konfiguration</h1>
+        <form method="post" class="vstack gap-3">
+          <div>
+            <label class="form-label">ACS-API-URL</label>
+            <input name="acs_api_url" class="form-control" value="{{ config.acs_api_url }}" required />
+          </div>
+          <button class="btn btn-primary" type="submit">Speichern</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

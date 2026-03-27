@@ -58,6 +58,22 @@
           <dl class="row mb-0">
             <dt class="col-sm-5">Erkannte Klasse</dt>
             <dd class="col-sm-7">{{ device.connection_class }}</dd>
+            <dt class="col-sm-5">Verbindungsstatus</dt>
+            <dd class="col-sm-7">{{ device.wan_info.status }}</dd>
+            <dt class="col-sm-5">Externe IP</dt>
+            <dd class="col-sm-7">{{ device.wan_info.external_ip }}</dd>
+            <dt class="col-sm-5">Gateway</dt>
+            <dd class="col-sm-7">{{ device.wan_info.default_gateway }}</dd>
+            <dt class="col-sm-5">DNS-Server</dt>
+            <dd class="col-sm-7">{{ device.wan_info.dns_servers }}</dd>
+            <dt class="col-sm-5">Verbindungstyp</dt>
+            <dd class="col-sm-7">{{ device.wan_info.connection_type }}</dd>
+            <dt class="col-sm-5">NAT aktiv</dt>
+            <dd class="col-sm-7">{{ device.wan_info.nat_enabled }}</dd>
+            <dt class="col-sm-5">Leitungsprofil (Down/Up)</dt>
+            <dd class="col-sm-7">{{ device.wan_info.downstream_max_rate }} / {{ device.wan_info.upstream_max_rate }}</dd>
+            <dt class="col-sm-5">Aktuelle Datenrate (Down/Up)</dt>
+            <dd class="col-sm-7">{{ device.wan_info.downstream_current_rate }} / {{ device.wan_info.upstream_current_rate }}</dd>
             <dt class="col-sm-5">Downstream gesamt</dt>
             <dd class="col-sm-7">{{ device.total_rx_bytes|bytes_to_human }}</dd>
             <dt class="col-sm-5">Upstream gesamt</dt>
@@ -68,7 +84,36 @@
 
           <hr>
           <h2 class="h6 text-muted mb-2">WLAN</h2>
-          <p class="mb-0 text-muted">WLAN-relevante Informationen werden aus dem ACS-Gerätebaum ausgelesen und in der nächsten Iteration detaillierter dargestellt.</p>
+          {% if device.wifi_radios %}
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Interface</th>
+                    <th>SSID</th>
+                    <th>Status</th>
+                    <th>Kanal</th>
+                    <th>Standard</th>
+                    <th>Clients</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for radio in device.wifi_radios %}
+                    <tr>
+                      <td>{{ radio.interface }}</td>
+                      <td>{{ radio.ssid }}</td>
+                      <td>{{ radio.status }}</td>
+                      <td>{{ radio.channel }}</td>
+                      <td>{{ radio.standard }}</td>
+                      <td>{{ radio.clients }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="mb-0 text-muted">Keine WLAN-Daten im ACS-Gerätebaum gefunden.</p>
+          {% endif %}
         </div>
       </div>
     </div>

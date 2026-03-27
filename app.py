@@ -362,6 +362,8 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
     now = datetime.now(UTC)
     is_online = bool(last_inform and now - last_inform <= timedelta(minutes=ONLINE_WINDOW_MINUTES))
     rx, tx = extract_traffic_bytes(device)
+    wan_info = extract_wan_info(device)
+    wifi_radios = extract_wifi_radios(device)
 
     return {
         "device_id": device.get("_id", "unbekannt"),
@@ -374,6 +376,8 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
         "connection_class": classify_connection(device),
         "total_rx_bytes": int(rx),
         "total_tx_bytes": int(tx),
+        "wan_info": wan_info,
+        "wifi_radios": wifi_radios,
     }
 
 
@@ -474,6 +478,82 @@ def extract_traffic_bytes(device: dict) -> tuple[Decimal, Decimal]:
     rx = max(rx_values, default=Decimal(0))
     tx = max(tx_values, default=Decimal(0))
     return rx, tx
+
+
+def extract_wan_info(device: dict) -> dict[str, str]:
+    wan_params = {
+        "ConnectionStatus",
+        "ExternalIPAddress",
+        "DefaultGateway",
+        "DNSServers",
+        "Uptime",
+        "Name",
+        "ConnectionType",
+        "NATEnabled",
+        "Layer1UpstreamMaxBitRate",
+        "Layer1DownstreamMaxBitRate",
+        "UpstreamCurrRate",
+        "DownstreamCurrRate",
+    }
+    values = {
+        key: value
+        for key, value in iter_parameter_values(device, wan_params)
+        if value not in (None, "")
+    }
+
+    def format_rate(raw_value: object) -> str:
+        numeric = to_decimal(raw_value)
+        if numeric is None:
+            return "-"
+        return f"{int(numeric):,} bit/s".replace(",", ".")
+
+    return {
+        "status": str(values.get("ConnectionStatus", "-")),
+        "external_ip": str(values.get("ExternalIPAddress", "-")),
+        "default_gateway": str(values.get("DefaultGateway", "-")),
+        "dns_servers": str(values.get("DNSServers", "-")),
+        "connection_name": str(values.get("Name", "-")),
+        "connection_type": str(values.get("ConnectionType", "-")),
+        "nat_enabled": str(values.get("NATEnabled", "-")),
+        "uptime_seconds": str(values.get("Uptime", "-")),
+        "downstream_max_rate": format_rate(values.get("Layer1DownstreamMaxBitRate")),
+        "upstream_max_rate": format_rate(values.get("Layer1UpstreamMaxBitRate")),
+        "downstream_current_rate": format_rate(values.get("DownstreamCurrRate")),
+        "upstream_current_rate": format_rate(values.get("UpstreamCurrRate")),
+    }
+
+
+def extract_wifi_radios(device: dict) -> list[dict[str, str]]:
+    radios: list[dict[str, str]] = []
+    lan_devices = device.get("InternetGatewayDevice", {}).get("LANDevice", {})
+    if not isinstance(lan_devices, dict):
+        return radios
+
+    for lan_index, lan_node in lan_devices.items():
+        if lan_index.startswith("_") or not isinstance(lan_node, dict):
+            continue
+        wlan_config = lan_node.get("WLANConfiguration")
+        if not isinstance(wlan_config, dict):
+            continue
+        for wlan_index, wlan_node in wlan_config.items():
+            if wlan_index.startswith("_") or not isinstance(wlan_node, dict):
+                continue
+            radios.append(
+                {
+                    "interface": f"LAN {lan_index} / WLAN {wlan_index}",
+                    "ssid": str(get_nested_acs_value(wlan_node, ["SSID"]) or "-"),
+                    "enabled": str(get_nested_acs_value(wlan_node, ["Enable"]) or "-"),
+                    "channel": str(get_nested_acs_value(wlan_node, ["Channel"]) or "-"),
+                    "standard": str(get_nested_acs_value(wlan_node, ["Standard"]) or "-"),
+                    "status": str(get_nested_acs_value(wlan_node, ["Status"]) or "-"),
+                    "bssid": str(get_nested_acs_value(wlan_node, ["BSSID"]) or "-"),
+                    "max_bitrate": str(get_nested_acs_value(wlan_node, ["MaxBitRate"]) or "-"),
+                    "clients": str(get_nested_acs_value(wlan_node, ["TotalAssociations"]) or "-"),
+                }
+            )
+
+    radios.sort(key=lambda item: item["interface"])
+    return radios
 
 
 def to_decimal(value: object) -> Decimal | None:

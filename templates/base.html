@@ -13,6 +13,7 @@
         {% if current_user.is_authenticated %}
           <div class="d-flex gap-2">
             <a class="btn btn-sm btn-outline-light" href="{{ url_for('dashboard') }}">Dashboard</a>
+            <a class="btn btn-sm btn-outline-light" href="{{ url_for('devices') }}">Geräte</a>
             {% if current_user.role == 'admin' %}
               <a class="btn btn-sm btn-outline-light" href="{{ url_for('settings') }}">Einstellungen</a>
               <a class="btn btn-sm btn-outline-light" href="{{ url_for('users') }}">Benutzer</a>

@@ -1,6 +1,10 @@
 import os
+from collections.abc import Iterable
 from datetime import datetime, UTC
+from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 
+import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
@@ -17,6 +21,19 @@ os.makedirs("/data", exist_ok=True)
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
+
+
+@app.template_filter("bytes_to_human")
+def bytes_to_human(value: int | None) -> str:
+    if value is None:
+        return "0 B"
+    suffixes = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(value)
+    for suffix in suffixes:
+        if size < 1024 or suffix == suffixes[-1]:
+            return f"{size:.2f} {suffix}"
+        size /= 1024
+    return "0 B"
 
 
 class User(UserMixin, db.Model):
@@ -130,7 +147,133 @@ def logout():
 @login_required
 def dashboard():
     config = AppConfig.query.first()
-    return render_template("dashboard.html", config=config)
+    summary = None
+    dashboard_error = None
+
+    if config and config.acs_api_url:
+        try:
+            summary = load_dashboard_summary(config.acs_api_url.rstrip("/"))
+        except requests.RequestException:
+            dashboard_error = "ACS-API ist derzeit nicht erreichbar."
+        except ValueError:
+            dashboard_error = "ACS-Antwort konnte nicht verarbeitet werden."
+    else:
+        dashboard_error = "Keine ACS-API-URL konfiguriert."
+
+    return render_template(
+        "dashboard.html",
+        config=config,
+        summary=summary,
+        dashboard_error=dashboard_error,
+    )
+
+
+def load_dashboard_summary(acs_api_url: str) -> dict:
+    active_since = datetime.now(UTC).replace(microsecond=0)
+    active_since = active_since.timestamp() - (24 * 60 * 60)
+    query = quote(f'{{"_lastInform":{{"$gte":"{datetime.fromtimestamp(active_since, UTC).isoformat()}"}}}}')
+
+    projection_fields = [
+        "_id",
+        "_lastInform",
+        "InternetGatewayDevice.WANDevice",
+        "InternetGatewayDevice.WANDevice.1.WANCommonInterfaceConfig",
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice",
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection",
+        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection",
+        "InternetGatewayDevice.WANDevice.2.WANCommonInterfaceConfig",
+        "InternetGatewayDevice.WANDevice.2.WANConnectionDevice",
+        "InternetGatewayDevice.WANDevice.2.WANConnectionDevice.1.WANIPConnection",
+        "InternetGatewayDevice.WANDevice.2.WANConnectionDevice.1.WANPPPConnection",
+    ]
+
+    projection = quote(",".join(projection_fields))
+    url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
+
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    devices = response.json()
+    if not isinstance(devices, list):
+        raise ValueError("Unexpected ACS response")
+
+    class_counts = {"Cable": 0, "DSL": 0, "Fiber": 0, "Unknown": 0}
+    total_rx_bytes = Decimal(0)
+    total_tx_bytes = Decimal(0)
+
+    for device in devices:
+        connection_class = classify_connection(device)
+        class_counts[connection_class] += 1
+        rx, tx = extract_traffic_bytes(device)
+        total_rx_bytes += rx
+        total_tx_bytes += tx
+
+    return {
+        "active_window_hours": 24,
+        "active_count": len(devices),
+        "class_counts": class_counts,
+        "total_rx_bytes": int(total_rx_bytes),
+        "total_tx_bytes": int(total_tx_bytes),
+        "total_traffic_bytes": int(total_rx_bytes + total_tx_bytes),
+    }
+
+
+def iter_parameter_values(node: object, parameter_names: set[str]) -> Iterable[tuple[str, object]]:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in parameter_names and isinstance(value, dict) and "_value" in value:
+                yield key, value["_value"]
+            yield from iter_parameter_values(value, parameter_names)
+    elif isinstance(node, list):
+        for item in node:
+            yield from iter_parameter_values(item, parameter_names)
+
+
+def classify_connection(device: dict) -> str:
+    wan_access_types = {
+        str(value).upper()
+        for _, value in iter_parameter_values(device, {"WANAccessType", "LinkType", "Type"})
+        if value is not None
+    }
+    if any("DSL" in value for value in wan_access_types):
+        return "DSL"
+    if any("FIB" in value or "GPON" in value for value in wan_access_types):
+        return "Fiber"
+    if any("CABLE" in value or "DOCSIS" in value for value in wan_access_types):
+        return "Cable"
+
+    layer1_types = {
+        str(value).upper()
+        for _, value in iter_parameter_values(device, {"Layer1UpstreamMaxBitRate", "Layer1DownstreamMaxBitRate"})
+        if value is not None
+    }
+    if layer1_types:
+        return "DSL"
+
+    return "Unknown"
+
+
+def extract_traffic_bytes(device: dict) -> tuple[Decimal, Decimal]:
+    rx_names = {"TotalBytesReceived", "BytesReceived", "X_AVM-DE_TotalBytesReceived64"}
+    tx_names = {"TotalBytesSent", "BytesSent", "X_AVM-DE_TotalBytesSent64"}
+
+    rx_values = [to_decimal(value) for _, value in iter_parameter_values(device, rx_names)]
+    tx_values = [to_decimal(value) for _, value in iter_parameter_values(device, tx_names)]
+
+    rx_values = [value for value in rx_values if value is not None]
+    tx_values = [value for value in tx_values if value is not None]
+
+    rx = max(rx_values, default=Decimal(0))
+    tx = max(tx_values, default=Decimal(0))
+    return rx, tx
+
+
+def to_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def admin_required():

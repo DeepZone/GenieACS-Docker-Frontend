@@ -156,7 +156,12 @@
                 </dl>
                 <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
                   <input type="hidden" name="action" value="run_udpst_test">
-                  <button type="submit" class="btn btn-primary btn-sm">UDPST-Test starten</button>
+                  <div class="d-flex flex-wrap gap-2">
+                    <button type="submit" class="btn btn-primary btn-sm">UDPST-Test starten</button>
+                    <button type="submit" name="action" value="debug_udpst_refresh" class="btn btn-outline-secondary btn-sm">
+                      Debug: Werte neu abrufen
+                    </button>
+                  </div>
                 </form>
               </div>
             </div>
@@ -171,6 +176,7 @@
                     <span class="small">{{ point.label }} ({{ point.raw_key }})</span>
                     <span class="small fw-semibold">{{ point.raw_value }}</span>
                   </div>
+                  <div class="small text-muted mb-1">Quelle: {{ point.source_path }}</div>
                   <div class="progress" role="progressbar" aria-valuenow="{{ point.percent }}" aria-valuemin="0" aria-valuemax="100">
                     <div class="progress-bar" style="width: {{ point.percent }}%"></div>
                   </div>
@@ -203,6 +209,24 @@
             </div>
           {% else %}
             <p class="text-muted">Keine Summary-Daten gefunden.</p>
+          {% endif %}
+
+          <h3 class="h6 text-muted mb-2">Debug-Informationen</h3>
+          {% if device.udpst.debug_details %}
+            <div class="table-responsive mb-3">
+              <table class="table table-sm align-middle mb-0">
+                <tbody>
+                  {% for row in device.udpst.debug_details %}
+                    <tr>
+                      <td class="text-muted">{{ row.label }}</td>
+                      <td>{{ row.value }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="text-muted">Keine Debug-Informationen vorhanden.</p>
           {% endif %}
 
           <h3 class="h6 text-muted mb-2">Rohdaten (JSON)</h3>

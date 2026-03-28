@@ -23,16 +23,16 @@
             aria-label="UDPST-Server LED"
           ></span>
           {% if udpst_server_status.is_running %}
-            <span class="fw-semibold text-success">UDPST-Server läuft</span>
+            <span class="fw-semibold text-success">UDPST-Server online</span>
           {% else %}
-            <span class="fw-semibold text-danger">UDPST-Server läuft nicht</span>
+            <span class="fw-semibold text-danger">UDPST-Server offline</span>
           {% endif %}
         </div>
         <p class="small text-muted mb-0 mt-2">
           Host: {{ udpst_server_status.host }} · Port: {{ udpst_server_status.port }}
         </p>
         {% if udpst_server_status.error %}
-          <p class="small text-danger mb-0 mt-1">Startfehler: {{ udpst_server_status.error }}</p>
+          <p class="small text-danger mb-0 mt-1">{{ udpst_server_status.error }}</p>
         {% endif %}
       </div>
     </div>

@@ -133,11 +133,12 @@
                     aria-label="UDPST-Server LED"
                   ></span>
                   {% if udpst_server_status.is_running %}
-                    <span class="fw-semibold text-success">UDPST-Server läuft</span>
+                    <span class="fw-semibold text-success">UDPST-Server online</span>
                   {% else %}
-                    <span class="fw-semibold text-danger">UDPST-Server läuft nicht</span>
+                    <span class="fw-semibold text-danger">UDPST-Server offline</span>
                   {% endif %}
                 </div>
+                <p class="small text-muted mb-2">Host: {{ udpst_server_status.host }} · Port: {{ udpst_server_status.port }}</p>
                 <p class="small text-muted mb-0">Letztes CPE-Server-Resultat: {{ device.udpst.server_result_text }}</p>
               </div>
             </div>

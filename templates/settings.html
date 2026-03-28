@@ -11,8 +11,56 @@
             <label class="form-label">ACS-API-URL</label>
             <input name="acs_api_url" class="form-control" value="{{ config.acs_api_url }}" required />
           </div>
+          <div>
+            <label class="form-label">UDPST-Server-URL (https)</label>
+            <input
+              name="udpst_server_url"
+              class="form-control"
+              value="{{ config.udpst_server_url }}"
+              placeholder="https://speedtest.example.com"
+              required
+            />
+            <div class="form-text">Erlaubt sind Domain- oder IP-Adressen. Das Protokoll muss https:// sein.</div>
+          </div>
+          <div>
+            <label class="form-label">UDPST-Port</label>
+            <input
+              name="udpst_server_port"
+              type="number"
+              min="1"
+              max="65535"
+              class="form-control"
+              value="{{ config.udpst_server_port }}"
+              required
+            />
+          </div>
           <button class="btn btn-primary" type="submit">Speichern</button>
         </form>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h2 class="h6 text-muted mb-3">UDPST-Monitoring</h2>
+        <div class="d-flex align-items-center gap-2">
+          <span
+            class="rounded-circle d-inline-block"
+            style="width: 14px; height: 14px; background-color: {{ '#198754' if udpst_server_status.is_running else '#dc3545' }};"
+            aria-label="UDPST-Server LED"
+          ></span>
+          {% if udpst_server_status.is_running %}
+            <span class="fw-semibold text-success">UDPST-Server online</span>
+          {% else %}
+            <span class="fw-semibold text-danger">UDPST-Server offline</span>
+          {% endif %}
+        </div>
+        <p class="small text-muted mb-0 mt-2">
+          Host: {{ udpst_server_status.host }} · Port: {{ udpst_server_status.port }}
+        </p>
+        {% if udpst_server_status.error %}
+          <p class="small text-danger mb-0 mt-1">{{ udpst_server_status.error }}</p>
+        {% endif %}
       </div>
     </div>
   </div>

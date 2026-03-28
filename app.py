@@ -1,5 +1,6 @@
 import json
 import os
+import select
 import socket
 import threading
 import time
@@ -97,7 +98,7 @@ class UdpstServer:
         self.host = host
         self.port = port
         self.buffer_size = buffer_size
-        self._socket: socket.socket | None = None
+        self._sockets: list[socket.socket] = []
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
         self._startup_error: str | None = None
@@ -106,12 +107,28 @@ class UdpstServer:
         if self._running.is_set():
             return
 
-        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp_socket.bind((self.host, self.port))
-        udp_socket.settimeout(1.0)
+        sockets: list[socket.socket] = []
+        seen_bind_targets: set[tuple[int, str, int]] = set()
+        address_info = socket.getaddrinfo(self.host, self.port, socket.AF_UNSPEC, socket.SOCK_DGRAM, 0, socket.AI_PASSIVE)
+        for family, socktype, proto, _, sockaddr in address_info:
+            bind_host = sockaddr[0]
+            bind_port = sockaddr[1]
+            dedupe_key = (family, bind_host, bind_port)
+            if dedupe_key in seen_bind_targets:
+                continue
+            seen_bind_targets.add(dedupe_key)
+            udp_socket = socket.socket(family, socktype, proto)
+            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+                udp_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            udp_socket.bind(sockaddr)
+            udp_socket.setblocking(False)
+            sockets.append(udp_socket)
 
-        self._socket = udp_socket
+        if not sockets:
+            raise OSError("No socket addresses resolved for UDPST server.")
+
+        self._sockets = sockets
         self._running.set()
         self._startup_error = None
 
@@ -120,36 +137,43 @@ class UdpstServer:
 
     def stop(self) -> None:
         self._running.clear()
-        if self._socket:
+        for udp_socket in self._sockets:
             try:
-                self._socket.close()
+                udp_socket.close()
             except OSError:
                 pass
-            self._socket = None
+        self._sockets = []
         self._thread = None
 
     def _serve(self) -> None:
         while self._running.is_set():
-            if self._socket is None:
+            if not self._sockets:
                 break
             try:
-                payload, client = self._socket.recvfrom(self.buffer_size)
-            except TimeoutError:
-                continue
+                readable_sockets, _, _ = select.select(self._sockets, [], [], 1.0)
             except OSError:
                 break
-
-            if not payload:
+            if not readable_sockets:
                 continue
-            if payload == UDPST_HEALTHCHECK_TOKEN:
-                response_payload = UDPST_HEALTHCHECK_RESPONSE
-            else:
-                response_payload = payload
+            for udp_socket in readable_sockets:
+                try:
+                    payload, client = udp_socket.recvfrom(self.buffer_size)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    continue
 
-            try:
-                self._socket.sendto(response_payload, client)
-            except OSError:
-                continue
+                if not payload:
+                    continue
+                if payload == UDPST_HEALTHCHECK_TOKEN:
+                    response_payload = UDPST_HEALTHCHECK_RESPONSE
+                else:
+                    response_payload = payload
+
+                try:
+                    udp_socket.sendto(response_payload, client)
+                except OSError:
+                    continue
 
     def mark_startup_error(self, error: Exception) -> None:
         self._startup_error = str(error)
@@ -1184,15 +1208,24 @@ def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 9
 
 
 def check_udpst_server_running(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-        probe.settimeout(UDPST_HEALTHCHECK_TIMEOUT_SECONDS)
-        probe.sendto(UDPST_HEALTHCHECK_TOKEN, (host, port))
-        response, _ = probe.recvfrom(128)
-        return response == UDPST_HEALTHCHECK_RESPONSE
+    addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+    for family, socktype, proto, _, sockaddr in addresses:
+        try:
+            with socket.socket(family, socktype, proto) as probe:
+                probe.settimeout(UDPST_HEALTHCHECK_TIMEOUT_SECONDS)
+                probe.sendto(UDPST_HEALTHCHECK_TOKEN, sockaddr)
+                response, _ = probe.recvfrom(128)
+                if response == UDPST_HEALTHCHECK_RESPONSE:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def get_udpst_server_status() -> dict[str, object]:
     probe_host = "127.0.0.1" if UDPST_SERVER.host == "0.0.0.0" else UDPST_SERVER.host
+    if UDPST_SERVER.host == "::":
+        probe_host = "::1"
     try:
         healthy = check_udpst_server_running(probe_host, UDPST_SERVER.port)
     except OSError:

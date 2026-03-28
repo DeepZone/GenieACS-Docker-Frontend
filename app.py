@@ -329,7 +329,6 @@ def device_udpst_action(device_id: str):
                 acs_api_url,
                 device_id,
                 [
-                    ("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Start", True, "xsd:boolean"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Host", host, "xsd:string"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Port", port, "xsd:unsignedInt"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Role", role, "xsd:string"),

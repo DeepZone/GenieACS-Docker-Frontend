@@ -125,21 +125,20 @@
           <div class="row g-3 mb-3">
             <div class="col-12 col-xl-6">
               <div class="border rounded p-3 h-100">
-                <h3 class="h6 mb-3">UDP Speedtest-Server (CPE)</h3>
-                <dl class="row mb-3">
-                  <dt class="col-sm-5">Server-State</dt>
-                  <dd class="col-sm-7">{{ device.udpst.server_state }}</dd>
-                  <dt class="col-sm-5">UDP-Port</dt>
-                  <dd class="col-sm-7">{{ device.udpst.server_port }}</dd>
-                  <dt class="col-sm-5">UDP-Port bidirekt</dt>
-                  <dd class="col-sm-7">{{ device.udpst.server_port_bidirect }}</dd>
-                  <dt class="col-sm-5">WAN Access</dt>
-                  <dd class="col-sm-7">{{ device.udpst.server_wan_access }}</dd>
-                </dl>
-                <p class="small text-muted mb-0">
-                  Der UDP-Server wird automatisch beim Container-Start sowie vor jedem UDPST-Test gestartet.
-                </p>
-                <p class="small text-muted mt-3 mb-0">Letztes Server-Resultat: {{ device.udpst.server_result_text }}</p>
+                <h3 class="h6 mb-3">UDPST-Serverstatus</h3>
+                <div class="d-flex align-items-center gap-2 mb-3">
+                  <span
+                    class="rounded-circle d-inline-block"
+                    style="width: 14px; height: 14px; background-color: {{ '#198754' if udpst_server_status.is_running else '#dc3545' }};"
+                    aria-label="UDPST-Server LED"
+                  ></span>
+                  {% if udpst_server_status.is_running %}
+                    <span class="fw-semibold text-success">UDPST-Server läuft</span>
+                  {% else %}
+                    <span class="fw-semibold text-danger">UDPST-Server läuft nicht</span>
+                  {% endif %}
+                </div>
+                <p class="small text-muted mb-0">Letztes CPE-Server-Resultat: {{ device.udpst.server_result_text }}</p>
               </div>
             </div>
 
@@ -154,30 +153,9 @@
                   <dt class="col-sm-5">Result.Message</dt>
                   <dd class="col-sm-7">{{ device.udpst.result_message }}</dd>
                 </dl>
-                <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="row g-2">
+                <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
                   <input type="hidden" name="action" value="run_udpst_test">
-                  <div class="col-12">
-                    <label class="form-label mb-1" for="test_host">Test-Host</label>
-                    <input class="form-control form-control-sm" id="test_host" name="test_host" required value="{{ device.udpst.test_host }}">
-                  </div>
-                  <div class="col-6">
-                    <label class="form-label mb-1" for="test_port">Port</label>
-                    <input class="form-control form-control-sm" id="test_port" name="test_port" value="{{ device.udpst.test_port }}">
-                  </div>
-                  <div class="col-6">
-                    <label class="form-label mb-1" for="test_role">Rolle</label>
-                    <select class="form-select form-select-sm" id="test_role" name="test_role">
-                      <option value="Receiver" {% if device.udpst.test_role == "Receiver" %}selected{% endif %}>Receiver</option>
-                      <option value="Sender" {% if device.udpst.test_role == "Sender" %}selected{% endif %}>Sender</option>
-                    </select>
-                  </div>
-                  <div class="col-12 d-flex gap-2">
-                    <button type="submit" class="btn btn-primary btn-sm">UDPST-Test starten</button>
-                  </div>
-                </form>
-                <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="mt-2">
-                  <input type="hidden" name="action" value="abort_udpst_test">
-                  <button type="submit" class="btn btn-outline-danger btn-sm">Test abbrechen</button>
+                  <button type="submit" class="btn btn-primary btn-sm">UDPST-Test starten</button>
                 </form>
               </div>
             </div>

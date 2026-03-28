@@ -40,6 +40,11 @@ Umgebungsvariablen in `docker-compose.yml`:
 
 - `SECRET_KEY`: Session-Sicherheit (in Produktion ändern)
 - `DATABASE_URL`: SQLAlchemy-Connection-String
+- `UDPST_SERVER_HOST`: Bind-Adresse des lokalen UDPST-Servers (für externen Zugriff i. d. R. `0.0.0.0`)
+- `UDPST_SERVER_PORT`: UDP-Port des lokalen UDPST-Servers
+- `UDPST_TEST_HOST`: Öffentlich erreichbare IP oder DNS-Name, den Geräte für den UDPST-Test nutzen sollen
+- `UDPST_TEST_PORT`: Zielport für den UDPST-Test
+- `UDPST_TEST_ROLE`: Rolle für den IPLayerCapacity-Test (`Receiver` oder `Sender`)
 
 ## Hinweis
 

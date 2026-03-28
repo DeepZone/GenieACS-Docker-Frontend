@@ -12,15 +12,15 @@
             <input name="acs_api_url" class="form-control" value="{{ config.acs_api_url }}" required />
           </div>
           <div>
-            <label class="form-label">UDPST-Server-URL (https)</label>
+            <label class="form-label">UDPST-Server (Hostname oder IP)</label>
             <input
               name="udpst_server_url"
               class="form-control"
               value="{{ config.udpst_server_url }}"
-              placeholder="https://speedtest.example.com"
+              placeholder="speedtest.example.com"
               required
             />
-            <div class="form-text">Erlaubt sind Domain- oder IP-Adressen. Das Protokoll muss https:// sein.</div>
+            <div class="form-text">Erlaubt sind Hostname oder IP-Adresse; optional auch mit Schema (z. B. https://).</div>
           </div>
           <div>
             <label class="form-label">UDPST-Port</label>

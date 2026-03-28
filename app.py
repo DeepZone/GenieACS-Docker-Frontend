@@ -1,5 +1,7 @@
 import json
 import os
+import socket
+import threading
 import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
@@ -63,6 +65,13 @@ UDPST_STATUS_PARAMETER_NAMES = [
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.JSONResult",
 ]
 
+UDPST_SERVER_HOST = os.getenv("UDPST_SERVER_HOST", "0.0.0.0")
+UDPST_SERVER_PORT = int(os.getenv("UDPST_SERVER_PORT", "25000"))
+UDPST_SERVER_BUFFER_SIZE = int(os.getenv("UDPST_SERVER_BUFFER_SIZE", "4096"))
+UDPST_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("UDPST_HEALTHCHECK_TIMEOUT_SECONDS", "1.5"))
+UDPST_HEALTHCHECK_TOKEN = b"UDPST_HEALTHCHECK"
+UDPST_HEALTHCHECK_RESPONSE = b"UDPST_OK"
+
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
 
 IDENTITY_VALUE_PATHS: dict[str, list[str]] = {
@@ -78,6 +87,81 @@ IDENTITY_PARAMETER_NAMES = [
     "InternetGatewayDevice.DeviceInfo.X_AVM-DE_ProdSerialNumber",
     "InternetGatewayDevice.DeviceInfo.ModelName",
 ]
+
+
+class UdpstServer:
+    def __init__(self, host: str, port: int, buffer_size: int) -> None:
+        self.host = host
+        self.port = port
+        self.buffer_size = buffer_size
+        self._socket: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._running = threading.Event()
+        self._startup_error: str | None = None
+
+    def start(self) -> None:
+        if self._running.is_set():
+            return
+
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_socket.bind((self.host, self.port))
+        udp_socket.settimeout(1.0)
+
+        self._socket = udp_socket
+        self._running.set()
+        self._startup_error = None
+
+        self._thread = threading.Thread(target=self._serve, name="udpst-server", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running.clear()
+        if self._socket:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+            self._socket = None
+        self._thread = None
+
+    def _serve(self) -> None:
+        while self._running.is_set():
+            if self._socket is None:
+                break
+            try:
+                payload, client = self._socket.recvfrom(self.buffer_size)
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+
+            if not payload:
+                continue
+            if payload == UDPST_HEALTHCHECK_TOKEN:
+                response_payload = UDPST_HEALTHCHECK_RESPONSE
+            else:
+                response_payload = payload
+
+            try:
+                self._socket.sendto(response_payload, client)
+            except OSError:
+                continue
+
+    def mark_startup_error(self, error: Exception) -> None:
+        self._startup_error = str(error)
+        self._running.clear()
+
+    @property
+    def startup_error(self) -> str | None:
+        return self._startup_error
+
+    @property
+    def running(self) -> bool:
+        return self._running.is_set()
+
+
+UDPST_SERVER = UdpstServer(UDPST_SERVER_HOST, UDPST_SERVER_PORT, UDPST_SERVER_BUFFER_SIZE)
 
 
 @app.template_filter("bytes_to_human")
@@ -206,6 +290,7 @@ def dashboard():
     config = AppConfig.query.first()
     summary = None
     dashboard_error = None
+    udpst_server_status = get_udpst_server_status()
 
     if config and config.acs_api_url:
         try:
@@ -222,6 +307,7 @@ def dashboard():
         config=config,
         summary=summary,
         dashboard_error=dashboard_error,
+        udpst_server_status=udpst_server_status,
     )
 
 
@@ -1096,6 +1182,29 @@ def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 9
     return False
 
 
+def check_udpst_server_running(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.settimeout(UDPST_HEALTHCHECK_TIMEOUT_SECONDS)
+        probe.sendto(UDPST_HEALTHCHECK_TOKEN, (host, port))
+        response, _ = probe.recvfrom(128)
+        return response == UDPST_HEALTHCHECK_RESPONSE
+
+
+def get_udpst_server_status() -> dict[str, object]:
+    probe_host = "127.0.0.1" if UDPST_SERVER.host == "0.0.0.0" else UDPST_SERVER.host
+    try:
+        healthy = check_udpst_server_running(probe_host, UDPST_SERVER.port)
+    except OSError:
+        healthy = False
+
+    return {
+        "is_running": UDPST_SERVER.running and healthy,
+        "host": UDPST_SERVER.host,
+        "port": UDPST_SERVER.port,
+        "error": UDPST_SERVER.startup_error,
+    }
+
+
 def start_udpst_server_for_all_devices(acs_api_url: str) -> None:
     projection = quote("_id")
     list_url = f"{acs_api_url}/devices/?projection={projection}"
@@ -1217,6 +1326,11 @@ def delete_user(user_id: int):
 
 with app.app_context():
     db.create_all()
+    try:
+        UDPST_SERVER.start()
+    except OSError as error:
+        UDPST_SERVER.mark_startup_error(error)
+
     startup_config = AppConfig.query.first()
     if startup_config and startup_config.acs_api_url:
         try:

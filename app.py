@@ -622,11 +622,9 @@ def refresh_identity_from_device(acs_api_url: str, device_id: str) -> dict | Non
 
 
 def get_nested_acs_value(device: dict, path: list[str]) -> str | None:
-    node: object = device
-    for segment in path:
-        if not isinstance(node, dict) or segment not in node:
-            return None
-        node = node[segment]
+    node = resolve_acs_path_node(device, path)
+    if node is None:
+        return None
 
     if isinstance(node, dict):
         if "_value" in node and node["_value"] is not None:
@@ -636,6 +634,31 @@ def get_nested_acs_value(device: dict, path: list[str]) -> str | None:
 
     value = str(node).strip()
     return value or None
+
+
+def resolve_acs_path_node(device: dict, path: list[str]) -> object | None:
+    node: object = device
+    for segment in path:
+        if not isinstance(node, dict) or segment not in node:
+            node = None
+            break
+        node = node[segment]
+    if node is not None:
+        return node
+
+    if not isinstance(device, dict):
+        return None
+
+    full_key = ".".join(path)
+    if full_key in device:
+        return device[full_key]
+    igd_key = f"InternetGatewayDevice.{full_key}"
+    if igd_key in device:
+        return device[igd_key]
+    device_key = f"Device.{full_key}"
+    if device_key in device:
+        return device[device_key]
+    return None
 
 
 def parse_acs_datetime(value: object) -> datetime | None:
@@ -654,8 +677,16 @@ def parse_acs_datetime(value: object) -> datetime | None:
 def iter_parameter_values(node: object, parameter_names: set[str]) -> Iterable[tuple[str, object]]:
     if isinstance(node, dict):
         for key, value in node.items():
-            if key in parameter_names and isinstance(value, dict) and "_value" in value:
-                yield key, value["_value"]
+            matched_name = None
+            if key in parameter_names:
+                matched_name = key
+            else:
+                for parameter_name in parameter_names:
+                    if key.endswith(f".{parameter_name}"):
+                        matched_name = parameter_name
+                        break
+            if matched_name and isinstance(value, dict) and "_value" in value:
+                yield matched_name, value["_value"]
             yield from iter_parameter_values(value, parameter_names)
     elif isinstance(node, list):
         for item in node:
@@ -970,16 +1001,9 @@ def extract_wifi_radios(device: dict) -> list[dict[str, str]]:
 
 
 def extract_udpst_info(device: dict) -> dict[str, object]:
-    speedtest_server = device.get("InternetGatewayDevice", {}).get("X_AVM-DE_SpeedtestServer", {})
-    diagnostic_tools = device.get("InternetGatewayDevice", {}).get("X_AVM-DE_DiagnosticTools", {})
-    ip_layer_capacity = diagnostic_tools.get("IPLayerCapacity", {}) if isinstance(diagnostic_tools, dict) else {}
-
-    udp_server = speedtest_server.get("UDP", {}) if isinstance(speedtest_server, dict) else {}
-    control = ip_layer_capacity.get("Control", {}) if isinstance(ip_layer_capacity, dict) else {}
-    config = ip_layer_capacity.get("Config", {}) if isinstance(ip_layer_capacity, dict) else {}
-    result = ip_layer_capacity.get("Result", {}) if isinstance(ip_layer_capacity, dict) else {}
-
-    raw_json_result = get_nested_acs_value(result, ["Result"]) or ""
+    raw_json_result = get_nested_acs_value(
+        device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Result", "Result"]
+    ) or ""
     parsed_json_result = parse_udpst_json_result(raw_json_result)
     chart_points = extract_udpst_incremental_chart(parsed_json_result)
     summary = extract_udpst_summary(parsed_json_result)
@@ -988,17 +1012,49 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
     monitor_target = resolve_udpst_monitor_target(config_model)
 
     return {
-        "server_state": get_nested_acs_value(udp_server, ["State"]) or "-",
-        "server_port": get_nested_acs_value(udp_server, ["Port"]) or "-",
-        "server_port_bidirect": get_nested_acs_value(udp_server, ["PortBidirect"]) or "-",
-        "server_wan_access": get_nested_acs_value(udp_server, ["WANAccess"]) or "-",
-        "server_result_text": get_nested_acs_value(udp_server, ["Result"]) or "-",
-        "test_host": get_nested_acs_value(config, ["Host"]) or monitor_target.get("host") or "-",
-        "test_port": get_nested_acs_value(config, ["Port"]) or str(monitor_target.get("port") or UDPST_TEST_PORT),
-        "test_role": get_nested_acs_value(config, ["Role"]) or UDPST_TEST_ROLE,
-        "control_state": get_nested_acs_value(control, ["State"]) or "-",
-        "result_success": get_nested_acs_value(result, ["Success"]) or "-",
-        "result_message": get_nested_acs_value(result, ["Message"]) or "-",
+        "server_state": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "State"]
+        )
+        or "-",
+        "server_port": get_nested_acs_value(device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "Port"])
+        or "-",
+        "server_port_bidirect": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "PortBidirect"]
+        )
+        or "-",
+        "server_wan_access": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "WANAccess"]
+        )
+        or "-",
+        "server_result_text": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "Result"]
+        )
+        or "-",
+        "test_host": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "Host"]
+        )
+        or monitor_target.get("host")
+        or "-",
+        "test_port": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "Port"]
+        )
+        or str(monitor_target.get("port") or UDPST_TEST_PORT),
+        "test_role": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "Role"]
+        )
+        or UDPST_TEST_ROLE,
+        "control_state": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Control", "State"]
+        )
+        or "-",
+        "result_success": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Result", "Success"]
+        )
+        or "-",
+        "result_message": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Result", "Message"]
+        )
+        or "-",
         "result_json_text": raw_json_result,
         "result_json_pretty": json.dumps(parsed_json_result, ensure_ascii=False, indent=2) if parsed_json_result else "",
         "summary_rows": summary,
@@ -1009,10 +1065,16 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
 def parse_udpst_json_result(raw_result: str) -> dict:
     if not raw_result:
         return {}
-    try:
-        parsed = json.loads(raw_result)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return {}
+    parsed: object = raw_result
+    for _ in range(2):
+        if isinstance(parsed, dict):
+            return parsed
+        if not isinstance(parsed, str):
+            return {}
+        try:
+            parsed = json.loads(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
     if isinstance(parsed, dict):
         return parsed
     return {}
@@ -1038,13 +1100,17 @@ def extract_udpst_incremental_chart(result_json: dict) -> list[dict[str, object]
     if not isinstance(output, dict):
         return []
     incremental_result = output.get("IncrementalResult")
-    if not isinstance(incremental_result, list):
+    if isinstance(incremental_result, dict):
+        incremental_entries: list[object] = list(incremental_result.values())
+    elif isinstance(incremental_result, list):
+        incremental_entries = incremental_result
+    else:
         return []
 
-    candidates = ("IPLR", "IPLayerRate", "LayerRate", "Rate", "DataRate", "OfferedRate")
+    candidates = ("IPLR", "IPLayerRate", "LayerRate", "Rate", "DataRate", "OfferedRate", "Bps", "Bitrate", "Speed")
     points: list[dict[str, object]] = []
     max_value = Decimal(0)
-    for index, entry in enumerate(incremental_result, start=1):
+    for index, entry in enumerate(incremental_entries, start=1):
         if not isinstance(entry, dict):
             continue
         rate_value = None

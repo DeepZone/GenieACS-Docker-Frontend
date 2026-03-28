@@ -36,8 +36,7 @@ DEVICES_PROJECTION_FIELDS = [
     "_lastInform",
     "DeviceID.Manufacturer",
     "DeviceID.ProductClass",
-    "DeviceID.SerialNumber",
-    "DeviceInfo.ModelName",
+    "InternetGatewayDevice.DeviceInfo.X_AVM-DE_ProdSerialNumber",
     "InternetGatewayDevice.DeviceInfo.ModelName",
 ]
 
@@ -46,11 +45,26 @@ DEVICE_DETAIL_PROJECTION_FIELDS = [
     "_lastInform",
     "DeviceID.Manufacturer",
     "DeviceID.ProductClass",
-    "DeviceID.SerialNumber",
-    "DeviceInfo.ModelName",
+    "InternetGatewayDevice.DeviceInfo.X_AVM-DE_ProdSerialNumber",
     "InternetGatewayDevice.DeviceInfo.ModelName",
     "InternetGatewayDevice.WANDevice",
     "InternetGatewayDevice.LANDevice",
+]
+
+IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
+
+IDENTITY_VALUE_PATHS: dict[str, list[str]] = {
+    "manufacturer": ["DeviceID", "Manufacturer"],
+    "product_class": ["DeviceID", "ProductClass"],
+    "serial_number": ["InternetGatewayDevice", "DeviceInfo", "X_AVM-DE_ProdSerialNumber"],
+    "model": ["InternetGatewayDevice", "DeviceInfo", "ModelName"],
+}
+
+IDENTITY_PARAMETER_NAMES = [
+    "DeviceID.Manufacturer",
+    "DeviceID.ProductClass",
+    "InternetGatewayDevice.DeviceInfo.X_AVM-DE_ProdSerialNumber",
+    "InternetGatewayDevice.DeviceInfo.ModelName",
 ]
 
 
@@ -314,13 +328,15 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
         if status_filter == "offline" and is_online:
             continue
 
+        identity = get_device_identity_values(acs_api_url, device)
+
         rows.append(
             {
                 "device_id": device.get("_id", "unbekannt"),
-                "manufacturer": get_device_identity_value(device, "manufacturer"),
-                "product_class": get_device_identity_value(device, "product_class"),
-                "serial_number": get_device_identity_value(device, "serial_number"),
-                "model": get_device_identity_value(device, "model"),
+                "manufacturer": identity["manufacturer"],
+                "product_class": identity["product_class"],
+                "serial_number": identity["serial_number"],
+                "model": identity["model"],
                 "last_inform": last_inform,
                 "is_online": is_online,
             }
@@ -437,12 +453,14 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
     if legacy_rows:
         internet_sections.append({"title": "WAN (Kompatibilität)", "rows": legacy_rows})
 
+    identity = get_device_identity_values(acs_api_url, device)
+
     return {
         "device_id": device.get("_id", "unbekannt"),
-        "manufacturer": get_device_identity_value(device, "manufacturer"),
-        "product_class": get_device_identity_value(device, "product_class"),
-        "serial_number": get_device_identity_value(device, "serial_number"),
-        "model": get_device_identity_value(device, "model"),
+        "manufacturer": identity["manufacturer"],
+        "product_class": identity["product_class"],
+        "serial_number": identity["serial_number"],
+        "model": identity["model"],
         "last_inform": last_inform,
         "is_online": is_online,
         "connection_class": connection_class,
@@ -466,23 +484,45 @@ def build_info_rows(info: dict[str, str], field_definitions: list[tuple[str, str
     return rows
 
 
-def get_device_identity_value(device: dict, field_name: str) -> str:
-    value_paths: dict[str, list[list[str]]] = {
-        "manufacturer": [["DeviceID", "Manufacturer"], ["DeviceInfo", "Manufacturer"]],
-        "product_class": [["DeviceID", "ProductClass"], ["DeviceInfo", "ProductClass"]],
-        "serial_number": [["DeviceID", "SerialNumber"], ["DeviceInfo", "SerialNumber"]],
-        "model": [
-            ["DeviceInfo", "ModelName"],
-            ["InternetGatewayDevice", "DeviceInfo", "ModelName"],
-        ],
-    }
+def get_device_identity_values(acs_api_url: str, device: dict) -> dict[str, str]:
+    identity = {field: get_nested_acs_value(device, IDENTITY_VALUE_PATHS[field]) for field in IDENTITY_FIELDS}
 
-    for path in value_paths.get(field_name, []):
-        value = get_nested_acs_value(device, path)
-        if value:
-            return value
+    if any(not value for value in identity.values()):
+        refreshed_device = refresh_identity_from_device(acs_api_url, str(device.get("_id", "")))
+        if refreshed_device:
+            identity = {field: get_nested_acs_value(refreshed_device, IDENTITY_VALUE_PATHS[field]) for field in IDENTITY_FIELDS}
 
-    return "-"
+    return {field: (identity.get(field) or "-") for field in IDENTITY_FIELDS}
+
+
+def refresh_identity_from_device(acs_api_url: str, device_id: str) -> dict | None:
+    if not device_id:
+        return None
+
+    task_url = f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks?timeout=10000&connection_request"
+    task_payload = {"name": "getParameterValues", "parameterNames": IDENTITY_PARAMETER_NAMES}
+
+    try:
+        task_response = requests.post(task_url, json=task_payload, timeout=10)
+        task_response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    query = quote(json.dumps({"_id": device_id}, separators=(",", ":")))
+    projection = quote(",".join(DEVICE_DETAIL_PROJECTION_FIELDS))
+    url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
+
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    payload = response.json()
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
+
+    return None
 
 
 def get_nested_acs_value(device: dict, path: list[str]) -> str | None:

@@ -357,6 +357,16 @@ def device_udpst_action(device_id: str):
                 ],
             )
             flash("UDPST-Testabbruch wurde ausgelöst.", "info")
+        elif action == "debug_udpst_refresh":
+            queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
+            refreshed = poll_udpst_result(acs_api_url, device_id, timeout_seconds=25, poll_interval_seconds=2)
+            if refreshed:
+                flash("Debug-Abruf erfolgreich: UDPST-Parameter und Result.Result wurden erneut abgefragt.", "success")
+            else:
+                flash(
+                    "Debug-Abruf gestartet: Gerät hat noch kein finales Result.Result geliefert. Rohdaten prüfen.",
+                    "warning",
+                )
         else:
             flash("Unbekannte UDPST-Aktion.", "warning")
     except requests.RequestException:
@@ -1007,6 +1017,7 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
     parsed_json_result = parse_udpst_json_result(raw_json_result)
     chart_points = extract_udpst_incremental_chart(parsed_json_result)
     summary = extract_udpst_summary(parsed_json_result)
+    debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points)
 
     config_model = AppConfig.query.first()
     monitor_target = resolve_udpst_monitor_target(config_model)
@@ -1059,6 +1070,7 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
         "result_json_pretty": json.dumps(parsed_json_result, ensure_ascii=False, indent=2) if parsed_json_result else "",
         "summary_rows": summary,
         "chart_points": chart_points,
+        "debug_details": debug_details,
     }
 
 
@@ -1100,35 +1112,26 @@ def extract_udpst_incremental_chart(result_json: dict) -> list[dict[str, object]
     if not isinstance(output, dict):
         return []
     incremental_result = output.get("IncrementalResult")
-    if isinstance(incremental_result, dict):
-        incremental_entries: list[object] = list(incremental_result.values())
-    elif isinstance(incremental_result, list):
-        incremental_entries = incremental_result
-    else:
+    if incremental_result is None:
         return []
 
     candidates = ("IPLR", "IPLayerRate", "LayerRate", "Rate", "DataRate", "OfferedRate", "Bps", "Bitrate", "Speed")
     points: list[dict[str, object]] = []
     max_value = Decimal(0)
-    for index, entry in enumerate(incremental_entries, start=1):
-        if not isinstance(entry, dict):
-            continue
-        rate_value = None
-        for key in candidates:
-            if key in entry and entry[key] not in (None, ""):
-                rate_value = to_decimal(entry[key])
-                if rate_value is not None:
-                    break
-        if rate_value is None:
+    extracted_entries = iter_udpst_rate_entries(incremental_result, candidates)
+    for index, entry in enumerate(extracted_entries, start=1):
+        rate_value = entry.get("numeric_value")
+        if not isinstance(rate_value, Decimal):
             continue
         max_value = max(max_value, rate_value)
         points.append(
             {
                 "label": f"Intervall {index}",
                 "value": float(rate_value),
-                "raw_key": key,
-                "raw_value": str(entry.get(key)),
+                "raw_key": str(entry.get("key") or "-"),
+                "raw_value": str(entry.get("raw_value") or "-"),
                 "percent": 0.0,
+                "source_path": str(entry.get("path") or "-"),
             }
         )
 
@@ -1136,6 +1139,43 @@ def extract_udpst_incremental_chart(result_json: dict) -> list[dict[str, object]
         for point in points:
             point["percent"] = min(100.0, round((Decimal(str(point["value"])) / max_value) * 100, 2))
     return points
+
+
+def iter_udpst_rate_entries(node: object, candidates: tuple[str, ...], path: str = "Output.IncrementalResult") -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    if isinstance(node, dict):
+        matched_key = next((candidate for candidate in candidates if candidate in node and node[candidate] not in (None, "")), None)
+        if matched_key is not None:
+            numeric_value = to_decimal(node.get(matched_key))
+            if numeric_value is not None:
+                entries.append(
+                    {
+                        "key": matched_key,
+                        "raw_value": node.get(matched_key),
+                        "numeric_value": numeric_value,
+                        "path": path,
+                    }
+                )
+        for key, value in node.items():
+            entries.extend(iter_udpst_rate_entries(value, candidates, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            entries.extend(iter_udpst_rate_entries(value, candidates, f"{path}[{index}]"))
+    return entries
+
+
+def build_udpst_debug_details(raw_result: str, parsed_result: dict, chart_points: list[dict[str, object]]) -> list[dict[str, str]]:
+    output = parsed_result.get("Output", {}) if isinstance(parsed_result, dict) else {}
+    incremental = output.get("IncrementalResult") if isinstance(output, dict) else None
+    incremental_kind = type(incremental).__name__ if incremental is not None else "missing"
+    first_point = chart_points[0] if chart_points else {}
+    return [
+        {"label": "Result.Result Länge", "value": str(len(raw_result or ""))},
+        {"label": "JSON parsebar", "value": "Ja" if bool(parsed_result) else "Nein"},
+        {"label": "IncrementalResult Typ", "value": incremental_kind},
+        {"label": "Diagramm-Punkte", "value": str(len(chart_points))},
+        {"label": "Erster Punkt Quelle", "value": str(first_point.get("source_path") or "-")},
+    ]
 
 
 def queue_set_parameter_values_task(

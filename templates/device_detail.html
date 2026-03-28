@@ -116,6 +116,134 @@
         </div>
       </div>
     </div>
+
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 text-muted mb-3">UDPST Speedtest</h2>
+
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-xl-6">
+              <div class="border rounded p-3 h-100">
+                <h3 class="h6 mb-3">UDP Speedtest-Server (CPE)</h3>
+                <dl class="row mb-3">
+                  <dt class="col-sm-5">Server-State</dt>
+                  <dd class="col-sm-7">{{ device.udpst.server_state }}</dd>
+                  <dt class="col-sm-5">UDP-Port</dt>
+                  <dd class="col-sm-7">{{ device.udpst.server_port }}</dd>
+                  <dt class="col-sm-5">UDP-Port bidirekt</dt>
+                  <dd class="col-sm-7">{{ device.udpst.server_port_bidirect }}</dd>
+                  <dt class="col-sm-5">WAN Access</dt>
+                  <dd class="col-sm-7">{{ device.udpst.server_wan_access }}</dd>
+                </dl>
+                <div class="d-flex gap-2">
+                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
+                    <input type="hidden" name="action" value="start_udp_server">
+                    <button type="submit" class="btn btn-success btn-sm">UDP-Server starten</button>
+                  </form>
+                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
+                    <input type="hidden" name="action" value="stop_udp_server">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm">UDP-Server stoppen</button>
+                  </form>
+                </div>
+                <p class="small text-muted mt-3 mb-0">Letztes Server-Resultat: {{ device.udpst.server_result_text }}</p>
+              </div>
+            </div>
+
+            <div class="col-12 col-xl-6">
+              <div class="border rounded p-3 h-100">
+                <h3 class="h6 mb-3">IPLayerCapacity-Test (udpst)</h3>
+                <dl class="row mb-3">
+                  <dt class="col-sm-5">Control-State</dt>
+                  <dd class="col-sm-7">{{ device.udpst.control_state }}</dd>
+                  <dt class="col-sm-5">Result.Success</dt>
+                  <dd class="col-sm-7">{{ device.udpst.result_success }}</dd>
+                  <dt class="col-sm-5">Result.Message</dt>
+                  <dd class="col-sm-7">{{ device.udpst.result_message }}</dd>
+                </dl>
+                <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="row g-2">
+                  <input type="hidden" name="action" value="run_udpst_test">
+                  <div class="col-12">
+                    <label class="form-label mb-1" for="test_host">Test-Host</label>
+                    <input class="form-control form-control-sm" id="test_host" name="test_host" required value="{{ device.udpst.test_host }}">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label mb-1" for="test_port">Port</label>
+                    <input class="form-control form-control-sm" id="test_port" name="test_port" value="{{ device.udpst.test_port }}">
+                  </div>
+                  <div class="col-6">
+                    <label class="form-label mb-1" for="test_role">Rolle</label>
+                    <select class="form-select form-select-sm" id="test_role" name="test_role">
+                      <option value="Receiver" {% if device.udpst.test_role == "Receiver" %}selected{% endif %}>Receiver</option>
+                      <option value="Sender" {% if device.udpst.test_role == "Sender" %}selected{% endif %}>Sender</option>
+                    </select>
+                  </div>
+                  <div class="col-12 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary btn-sm">UDPST-Test starten</button>
+                  </div>
+                </form>
+                <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="mt-2">
+                  <input type="hidden" name="action" value="abort_udpst_test">
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Test abbrechen</button>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (IncrementalResult)</h3>
+          {% if device.udpst.chart_points %}
+            <div class="vstack gap-2 mb-3">
+              {% for point in device.udpst.chart_points %}
+                <div>
+                  <div class="d-flex justify-content-between">
+                    <span class="small">{{ point.label }} ({{ point.raw_key }})</span>
+                    <span class="small fw-semibold">{{ point.raw_value }}</span>
+                  </div>
+                  <div class="progress" role="progressbar" aria-valuenow="{{ point.percent }}" aria-valuemin="0" aria-valuemax="100">
+                    <div class="progress-bar" style="width: {{ point.percent }}%"></div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="text-muted">Noch keine verwertbaren IncrementalResult-Daten verfügbar.</p>
+          {% endif %}
+
+          <h3 class="h6 text-muted mb-2">Summary</h3>
+          {% if device.udpst.summary_rows %}
+            <div class="table-responsive mb-3">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Parameter</th>
+                    <th>Wert</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in device.udpst.summary_rows %}
+                    <tr>
+                      <td>{{ row.label }}</td>
+                      <td>{{ row.value }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="text-muted">Keine Summary-Daten gefunden.</p>
+          {% endif %}
+
+          <h3 class="h6 text-muted mb-2">Rohdaten (JSON)</h3>
+          {% if device.udpst.result_json_pretty %}
+            <pre class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 24rem; overflow:auto;">{{ device.udpst.result_json_pretty }}</pre>
+          {% elif device.udpst.result_json_text %}
+            <pre class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 24rem; overflow:auto;">{{ device.udpst.result_json_text }}</pre>
+          {% else %}
+            <p class="mb-0 text-muted">Kein JSON-Ergebnis vorhanden.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
   {% endif %}
 </div>
 {% endblock %}

@@ -1,10 +1,20 @@
 services:
+  udpst-server:
+    build:
+      context: .
+      dockerfile: docker/obudpst/Dockerfile
+    container_name: udpst-server
+    ports:
+      - "25000:25000/udp"
+    restart: unless-stopped
+
   genieacs-frontend:
     build: .
     container_name: genieacs-frontend
+    depends_on:
+      - udpst-server
     ports:
       - "8080:8080"
-      - "25000:25000/udp"
     volumes:
       - ./data:/data
     environment:

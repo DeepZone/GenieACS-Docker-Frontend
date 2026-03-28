@@ -12,6 +12,32 @@
     </div>
   </div>
 
+  <div class="col-12">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h2 class="h6 text-muted mb-3">UDPST-Serverstatus</h2>
+        <div class="d-flex align-items-center gap-2">
+          <span
+            class="rounded-circle d-inline-block"
+            style="width: 14px; height: 14px; background-color: {{ '#198754' if udpst_server_status.is_running else '#dc3545' }};"
+            aria-label="UDPST-Server LED"
+          ></span>
+          {% if udpst_server_status.is_running %}
+            <span class="fw-semibold text-success">UDPST-Server läuft</span>
+          {% else %}
+            <span class="fw-semibold text-danger">UDPST-Server läuft nicht</span>
+          {% endif %}
+        </div>
+        <p class="small text-muted mb-0 mt-2">
+          Host: {{ udpst_server_status.host }} · Port: {{ udpst_server_status.port }}
+        </p>
+        {% if udpst_server_status.error %}
+          <p class="small text-danger mb-0 mt-1">Startfehler: {{ udpst_server_status.error }}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
   {% if dashboard_error %}
   <div class="col-12">
     <div class="alert alert-warning mb-0" role="alert">

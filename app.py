@@ -68,6 +68,9 @@ UDPST_STATUS_PARAMETER_NAMES = [
 UDPST_SERVER_HOST = os.getenv("UDPST_SERVER_HOST", "0.0.0.0")
 UDPST_SERVER_PORT = int(os.getenv("UDPST_SERVER_PORT", "25000"))
 UDPST_SERVER_BUFFER_SIZE = int(os.getenv("UDPST_SERVER_BUFFER_SIZE", "4096"))
+UDPST_TEST_HOST = os.getenv("UDPST_TEST_HOST", "")
+UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", str(UDPST_SERVER_PORT)))
+UDPST_TEST_ROLE = os.getenv("UDPST_TEST_ROLE", "Receiver")
 UDPST_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("UDPST_HEALTHCHECK_TIMEOUT_SECONDS", "1.5"))
 UDPST_HEALTHCHECK_TOKEN = b"UDPST_HEALTHCHECK"
 UDPST_HEALTHCHECK_RESPONSE = b"UDPST_OK"
@@ -348,6 +351,7 @@ def device_detail(device_id: str):
     config = AppConfig.query.first()
     detail_error = None
     device = None
+    udpst_server_status = get_udpst_server_status()
     if config and config.acs_api_url:
         try:
             device = load_device_detail(config.acs_api_url.rstrip("/"), device_id)
@@ -366,6 +370,7 @@ def device_detail(device_id: str):
         device=device,
         detail_error=detail_error,
         online_window_minutes=ONLINE_WINDOW_MINUTES,
+        udpst_server_status=udpst_server_status,
     )
 
 
@@ -382,16 +387,12 @@ def device_udpst_action(device_id: str):
 
     try:
         if action == "run_udpst_test":
-            host = request.form.get("test_host", "").strip()
-            port_raw = request.form.get("test_port", "").strip()
-            role = request.form.get("test_role", "Receiver").strip()
+            host = UDPST_TEST_HOST.strip()
+            port = UDPST_TEST_PORT
+            role = UDPST_TEST_ROLE.strip()
+
             if not host:
-                flash("Bitte einen UDPST-Test-Host angeben.", "warning")
-                return redirect(url_for("device_detail", device_id=device_id))
-            try:
-                port = int(port_raw) if port_raw else 25000
-            except ValueError:
-                flash("Ungültiger UDPST-Port.", "warning")
+                flash("UDPST_TEST_HOST ist nicht gesetzt. Bitte in den Umgebungsvariablen konfigurieren.", "warning")
                 return redirect(url_for("device_detail", device_id=device_id))
             if role not in {"Receiver", "Sender"}:
                 role = "Receiver"
@@ -1056,9 +1057,9 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
         "server_port_bidirect": get_nested_acs_value(udp_server, ["PortBidirect"]) or "-",
         "server_wan_access": get_nested_acs_value(udp_server, ["WANAccess"]) or "-",
         "server_result_text": get_nested_acs_value(udp_server, ["Result"]) or "-",
-        "test_host": get_nested_acs_value(config, ["Host"]) or "",
-        "test_port": get_nested_acs_value(config, ["Port"]) or "25000",
-        "test_role": get_nested_acs_value(config, ["Role"]) or "Receiver",
+        "test_host": get_nested_acs_value(config, ["Host"]) or UDPST_TEST_HOST or "-",
+        "test_port": get_nested_acs_value(config, ["Port"]) or str(UDPST_TEST_PORT),
+        "test_role": get_nested_acs_value(config, ["Role"]) or UDPST_TEST_ROLE,
         "control_state": get_nested_acs_value(control, ["State"]) or "-",
         "result_success": get_nested_acs_value(result, ["Success"]) or "-",
         "result_message": get_nested_acs_value(result, ["Message"]) or "-",

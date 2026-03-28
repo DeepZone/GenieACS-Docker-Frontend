@@ -63,7 +63,7 @@ UDPST_STATUS_PARAMETER_NAMES = [
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.State",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Success",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Message",
-    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.JSONResult",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Result",
 ]
 
 UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
@@ -1107,12 +1107,15 @@ def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 9
         device = load_device_detail(acs_api_url, device_id)
         if not device:
             continue
-        udpst_info = extract_udpst_info(device)
+        udpst_info = device.get("udpst", {}) if isinstance(device, dict) else {}
         control_state = str(udpst_info.get("control_state", "")).strip()
         result_message = str(udpst_info.get("result_message", "")).strip()
         result_success = str(udpst_info.get("result_success", "")).strip()
-        running_states = {"Requested", "Running", "InProgress", "Active"}
-        if control_state and control_state not in running_states and (result_message != "-" or result_success != "-"):
+        result_json_text = str(udpst_info.get("result_json_text", "")).strip()
+        running_states = {"Requested", "Running", "InProgress", "Active", "Started"}
+        if control_state and control_state not in running_states and (
+            result_message not in {"", "-"} or result_success not in {"", "-"} or result_json_text
+        ):
             return True
         if poll_interval_seconds > 0:
             time.sleep(poll_interval_seconds)

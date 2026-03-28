@@ -406,6 +406,8 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
             ("upstream_current_max_speed", "Current Max Speed Upstream"),
             ("downstream_utilization", "Utilization Downstream"),
             ("upstream_utilization", "Utilization Upstream"),
+            ("total_bytes_received", "Total Bytes Received"),
+            ("total_bytes_sent", "Total Bytes Sent"),
         ],
     )
     legacy_rows = build_info_rows(
@@ -532,6 +534,55 @@ def collect_parameter_values(node: object, parameter_names: set[str]) -> dict[st
     return values
 
 
+def iter_wan_device_nodes(device: dict) -> Iterable[dict]:
+    wan_devices = device.get("InternetGatewayDevice", {}).get("WANDevice", {})
+    if not isinstance(wan_devices, dict):
+        return
+    for wan_index, wan_node in wan_devices.items():
+        if wan_index.startswith("_") or not isinstance(wan_node, dict):
+            continue
+        yield wan_node
+
+
+def iter_wan_connection_nodes(device: dict) -> Iterable[dict]:
+    for wan_node in iter_wan_device_nodes(device):
+        wan_connection_devices = wan_node.get("WANConnectionDevice")
+        if not isinstance(wan_connection_devices, dict):
+            continue
+        for connection_index, connection_node in wan_connection_devices.items():
+            if connection_index.startswith("_") or not isinstance(connection_node, dict):
+                continue
+            yield connection_node
+
+
+def get_wan_section_value(device: dict, section_name: str, parameter_name: str) -> object | None:
+    for wan_node in iter_wan_device_nodes(device):
+        section_node = wan_node.get(section_name)
+        if not isinstance(section_node, dict):
+            continue
+        parameter_node = section_node.get(parameter_name)
+        if isinstance(parameter_node, dict) and parameter_node.get("_value") not in (None, ""):
+            return parameter_node["_value"]
+    return None
+
+
+def get_wan_connection_stat_value(device: dict, connection_type: str, parameter_name: str) -> object | None:
+    for connection_node in iter_wan_connection_nodes(device):
+        connection_table = connection_node.get(connection_type)
+        if not isinstance(connection_table, dict):
+            continue
+        for entry_index, entry_node in connection_table.items():
+            if entry_index.startswith("_") or not isinstance(entry_node, dict):
+                continue
+            stats_node = entry_node.get("Stats")
+            if not isinstance(stats_node, dict):
+                continue
+            parameter_node = stats_node.get(parameter_name)
+            if isinstance(parameter_node, dict) and parameter_node.get("_value") not in (None, ""):
+                return parameter_node["_value"]
+    return None
+
+
 def classify_connection(device: dict) -> str:
     classifier_values = collect_parameter_values(device, {"WANAccessType", "LinkType", "Type"})
     wan_access_types = {str(value).upper() for value in classifier_values.values()}
@@ -551,17 +602,36 @@ def classify_connection(device: dict) -> str:
 
 
 def extract_traffic_bytes(device: dict) -> tuple[Decimal, Decimal]:
-    rx_names = {"TotalBytesReceived", "BytesReceived", "EthernetBytesReceived"}
-    tx_names = {"TotalBytesSent", "BytesSent", "EthernetBytesSent"}
+    rx_candidates: list[Decimal] = []
+    tx_candidates: list[Decimal] = []
 
-    rx_values = [to_decimal(value) for _, value in iter_parameter_values(device, rx_names)]
-    tx_values = [to_decimal(value) for _, value in iter_parameter_values(device, tx_names)]
+    prioritized_rx_sources = [
+        get_wan_section_value(device, "WANCommonInterfaceConfig", "TotalBytesReceived"),
+        get_wan_connection_stat_value(device, "WANIPConnection", "EthernetBytesReceived"),
+        get_wan_connection_stat_value(device, "WANPPPConnection", "EthernetBytesReceived"),
+    ]
+    prioritized_tx_sources = [
+        get_wan_section_value(device, "WANCommonInterfaceConfig", "TotalBytesSent"),
+        get_wan_connection_stat_value(device, "WANIPConnection", "EthernetBytesSent"),
+        get_wan_connection_stat_value(device, "WANPPPConnection", "EthernetBytesSent"),
+    ]
 
-    rx_values = [value for value in rx_values if value is not None]
-    tx_values = [value for value in tx_values if value is not None]
+    for value in prioritized_rx_sources:
+        decimal_value = to_decimal(value)
+        if decimal_value is not None:
+            rx_candidates.append(decimal_value)
+    for value in prioritized_tx_sources:
+        decimal_value = to_decimal(value)
+        if decimal_value is not None:
+            tx_candidates.append(decimal_value)
 
-    rx = max(rx_values, default=Decimal(0))
-    tx = max(tx_values, default=Decimal(0))
+    fallback_rx = [to_decimal(value) for _, value in iter_parameter_values(device, {"TotalBytesReceived", "EthernetBytesReceived"})]
+    fallback_tx = [to_decimal(value) for _, value in iter_parameter_values(device, {"TotalBytesSent", "EthernetBytesSent"})]
+    rx_candidates.extend(value for value in fallback_rx if value is not None)
+    tx_candidates.extend(value for value in fallback_tx if value is not None)
+
+    rx = max(rx_candidates, default=Decimal(0))
+    tx = max(tx_candidates, default=Decimal(0))
     return rx, tx
 
 
@@ -664,15 +734,38 @@ def extract_wan_dsl_info(device: dict) -> dict[str, str]:
 
 
 def extract_wan_cable_info(device: dict) -> dict[str, str]:
-    cable_params = {
-        "X_AVM-DE_DownstreamCurrentMaxSpeed",
-        "X_AVM-DE_UpstreamCurrentMaxSpeed",
-        "X_AVM-DE_DownstreamCurrentUtilization",
-        "X_AVM-DE_UpstreamCurrentUtilization",
-        "PhysicalLinkStatus",
-        "WANAccessType",
+    cable_values: dict[str, object] = {
+        "WANAccessType": get_wan_section_value(device, "WANCommonInterfaceConfig", "WANAccessType"),
+        "PhysicalLinkStatus": get_wan_section_value(device, "WANCommonInterfaceConfig", "PhysicalLinkStatus"),
+        "X_AVM-DE_DownstreamCurrentMaxSpeed": get_wan_section_value(
+            device, "WANCommonInterfaceConfig", "X_AVM-DE_DownstreamCurrentMaxSpeed"
+        ),
+        "X_AVM-DE_UpstreamCurrentMaxSpeed": get_wan_section_value(
+            device, "WANCommonInterfaceConfig", "X_AVM-DE_UpstreamCurrentMaxSpeed"
+        ),
+        "X_AVM-DE_DownstreamCurrentUtilization": get_wan_section_value(
+            device, "WANCommonInterfaceConfig", "X_AVM-DE_DownstreamCurrentUtilization"
+        ),
+        "X_AVM-DE_UpstreamCurrentUtilization": get_wan_section_value(
+            device, "WANCommonInterfaceConfig", "X_AVM-DE_UpstreamCurrentUtilization"
+        ),
+        "TotalBytesReceived": get_wan_section_value(device, "WANCommonInterfaceConfig", "TotalBytesReceived"),
+        "TotalBytesSent": get_wan_section_value(device, "WANCommonInterfaceConfig", "TotalBytesSent"),
     }
-    values = collect_parameter_values(device, cable_params)
+    fallback_values = collect_parameter_values(
+        device,
+        {
+            "X_AVM-DE_DownstreamCurrentMaxSpeed",
+            "X_AVM-DE_UpstreamCurrentMaxSpeed",
+            "X_AVM-DE_DownstreamCurrentUtilization",
+            "X_AVM-DE_UpstreamCurrentUtilization",
+            "PhysicalLinkStatus",
+            "WANAccessType",
+            "TotalBytesReceived",
+            "TotalBytesSent",
+        },
+    )
+    values = {key: cable_values.get(key, fallback_values.get(key)) for key in set(cable_values) | set(fallback_values)}
 
     return {
         "wan_access_type": str(values.get("WANAccessType", "-")),
@@ -681,6 +774,8 @@ def extract_wan_cable_info(device: dict) -> dict[str, str]:
         "upstream_current_max_speed": format_byte_rate(values.get("X_AVM-DE_UpstreamCurrentMaxSpeed")),
         "downstream_utilization": str(values.get("X_AVM-DE_DownstreamCurrentUtilization", "-")),
         "upstream_utilization": str(values.get("X_AVM-DE_UpstreamCurrentUtilization", "-")),
+        "total_bytes_received": format_bytes(values.get("TotalBytesReceived")),
+        "total_bytes_sent": format_bytes(values.get("TotalBytesSent")),
     }
 
 
@@ -696,6 +791,13 @@ def format_byte_rate(raw_value: object) -> str:
     if numeric is None:
         return "-"
     return f"{int(numeric):,} B/s".replace(",", ".")
+
+
+def format_bytes(raw_value: object) -> str:
+    numeric = to_decimal(raw_value)
+    if numeric is None:
+        return "-"
+    return bytes_to_human(int(numeric))
 
 
 def extract_wifi_radios(device: dict) -> list[dict[str, str]]:

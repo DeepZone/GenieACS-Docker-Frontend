@@ -1,18 +1,18 @@
 import json
 import os
-import select
 import socket
-import threading
 import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from urllib.parse import quote
+from ipaddress import ip_address
+from urllib.parse import quote, urlparse
 
 import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -66,15 +66,9 @@ UDPST_STATUS_PARAMETER_NAMES = [
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.JSONResult",
 ]
 
-UDPST_SERVER_HOST = os.getenv("UDPST_SERVER_HOST", "0.0.0.0")
-UDPST_SERVER_PORT = int(os.getenv("UDPST_SERVER_PORT", "25000"))
-UDPST_SERVER_BUFFER_SIZE = int(os.getenv("UDPST_SERVER_BUFFER_SIZE", "4096"))
-UDPST_TEST_HOST = os.getenv("UDPST_TEST_HOST", "")
-UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", str(UDPST_SERVER_PORT)))
+UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
 UDPST_TEST_ROLE = os.getenv("UDPST_TEST_ROLE", "Receiver")
 UDPST_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("UDPST_HEALTHCHECK_TIMEOUT_SECONDS", "1.5"))
-UDPST_HEALTHCHECK_TOKEN = b"UDPST_HEALTHCHECK"
-UDPST_HEALTHCHECK_RESPONSE = b"UDPST_OK"
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
 
@@ -91,104 +85,6 @@ IDENTITY_PARAMETER_NAMES = [
     "InternetGatewayDevice.DeviceInfo.X_AVM-DE_ProdSerialNumber",
     "InternetGatewayDevice.DeviceInfo.ModelName",
 ]
-
-
-class UdpstServer:
-    def __init__(self, host: str, port: int, buffer_size: int) -> None:
-        self.host = host
-        self.port = port
-        self.buffer_size = buffer_size
-        self._sockets: list[socket.socket] = []
-        self._thread: threading.Thread | None = None
-        self._running = threading.Event()
-        self._startup_error: str | None = None
-
-    def start(self) -> None:
-        if self._running.is_set():
-            return
-
-        sockets: list[socket.socket] = []
-        seen_bind_targets: set[tuple[int, str, int]] = set()
-        address_info = socket.getaddrinfo(self.host, self.port, socket.AF_UNSPEC, socket.SOCK_DGRAM, 0, socket.AI_PASSIVE)
-        for family, socktype, proto, _, sockaddr in address_info:
-            bind_host = sockaddr[0]
-            bind_port = sockaddr[1]
-            dedupe_key = (family, bind_host, bind_port)
-            if dedupe_key in seen_bind_targets:
-                continue
-            seen_bind_targets.add(dedupe_key)
-            udp_socket = socket.socket(family, socktype, proto)
-            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
-                udp_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            udp_socket.bind(sockaddr)
-            udp_socket.setblocking(False)
-            sockets.append(udp_socket)
-
-        if not sockets:
-            raise OSError("No socket addresses resolved for UDPST server.")
-
-        self._sockets = sockets
-        self._running.set()
-        self._startup_error = None
-
-        self._thread = threading.Thread(target=self._serve, name="udpst-server", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._running.clear()
-        for udp_socket in self._sockets:
-            try:
-                udp_socket.close()
-            except OSError:
-                pass
-        self._sockets = []
-        self._thread = None
-
-    def _serve(self) -> None:
-        while self._running.is_set():
-            if not self._sockets:
-                break
-            try:
-                readable_sockets, _, _ = select.select(self._sockets, [], [], 1.0)
-            except OSError:
-                break
-            if not readable_sockets:
-                continue
-            for udp_socket in readable_sockets:
-                try:
-                    payload, client = udp_socket.recvfrom(self.buffer_size)
-                except BlockingIOError:
-                    continue
-                except OSError:
-                    continue
-
-                if not payload:
-                    continue
-                if payload == UDPST_HEALTHCHECK_TOKEN:
-                    response_payload = UDPST_HEALTHCHECK_RESPONSE
-                else:
-                    response_payload = payload
-
-                try:
-                    udp_socket.sendto(response_payload, client)
-                except OSError:
-                    continue
-
-    def mark_startup_error(self, error: Exception) -> None:
-        self._startup_error = str(error)
-        self._running.clear()
-
-    @property
-    def startup_error(self) -> str | None:
-        return self._startup_error
-
-    @property
-    def running(self) -> bool:
-        return self._running.is_set()
-
-
-UDPST_SERVER = UdpstServer(UDPST_SERVER_HOST, UDPST_SERVER_PORT, UDPST_SERVER_BUFFER_SIZE)
 
 
 @app.template_filter("bytes_to_human")
@@ -221,6 +117,8 @@ class User(UserMixin, db.Model):
 class AppConfig(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     acs_api_url = db.Column(db.String(500), nullable=False, default="http://genieacs:7557")
+    udpst_server_url = db.Column(db.String(500), nullable=False, default="")
+    udpst_server_port = db.Column(db.Integer, nullable=False, default=UDPST_TEST_PORT)
     updated_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(UTC))
 
 
@@ -272,7 +170,12 @@ def initial_setup():
         admin = User(username=username, role="admin")
         admin.set_password(password)
 
-        config = AppConfig(acs_api_url=acs_api_url, updated_at=datetime.now(UTC))
+        config = AppConfig(
+            acs_api_url=acs_api_url,
+            udpst_server_url="",
+            udpst_server_port=UDPST_TEST_PORT,
+            updated_at=datetime.now(UTC),
+        )
 
         db.session.add(admin)
         db.session.add(config)
@@ -317,7 +220,7 @@ def dashboard():
     config = AppConfig.query.first()
     summary = None
     dashboard_error = None
-    udpst_server_status = get_udpst_server_status()
+    udpst_server_status = get_udpst_server_status(config)
 
     if config and config.acs_api_url:
         try:
@@ -375,7 +278,7 @@ def device_detail(device_id: str):
     config = AppConfig.query.first()
     detail_error = None
     device = None
-    udpst_server_status = get_udpst_server_status()
+    udpst_server_status = get_udpst_server_status(config)
     if config and config.acs_api_url:
         try:
             device = load_device_detail(config.acs_api_url.rstrip("/"), device_id)
@@ -411,12 +314,13 @@ def device_udpst_action(device_id: str):
 
     try:
         if action == "run_udpst_test":
-            host = UDPST_TEST_HOST.strip()
-            port = UDPST_TEST_PORT
+            monitor_target = resolve_udpst_monitor_target(config)
+            host = monitor_target.get("host", "")
+            port = monitor_target.get("port")
             role = UDPST_TEST_ROLE.strip()
 
-            if not host:
-                flash("UDPST_TEST_HOST ist nicht gesetzt. Bitte in den Umgebungsvariablen konfigurieren.", "warning")
+            if not host or port is None:
+                flash("UDPST-Serveradresse ist nicht vollständig konfiguriert.", "warning")
                 return redirect(url_for("device_detail", device_id=device_id))
             if role not in {"Receiver", "Sender"}:
                 role = "Receiver"
@@ -1075,14 +979,17 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
     chart_points = extract_udpst_incremental_chart(parsed_json_result)
     summary = extract_udpst_summary(parsed_json_result)
 
+    config_model = AppConfig.query.first()
+    monitor_target = resolve_udpst_monitor_target(config_model)
+
     return {
         "server_state": get_nested_acs_value(udp_server, ["State"]) or "-",
         "server_port": get_nested_acs_value(udp_server, ["Port"]) or "-",
         "server_port_bidirect": get_nested_acs_value(udp_server, ["PortBidirect"]) or "-",
         "server_wan_access": get_nested_acs_value(udp_server, ["WANAccess"]) or "-",
         "server_result_text": get_nested_acs_value(udp_server, ["Result"]) or "-",
-        "test_host": get_nested_acs_value(config, ["Host"]) or UDPST_TEST_HOST or "-",
-        "test_port": get_nested_acs_value(config, ["Port"]) or str(UDPST_TEST_PORT),
+        "test_host": get_nested_acs_value(config, ["Host"]) or monitor_target.get("host") or "-",
+        "test_port": get_nested_acs_value(config, ["Port"]) or str(monitor_target.get("port") or UDPST_TEST_PORT),
         "test_role": get_nested_acs_value(config, ["Role"]) or UDPST_TEST_ROLE,
         "control_state": get_nested_acs_value(control, ["State"]) or "-",
         "result_success": get_nested_acs_value(result, ["Success"]) or "-",
@@ -1208,56 +1115,43 @@ def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 9
 
 
 def check_udpst_server_running(host: str, port: int) -> bool:
-    addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+    addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
     for family, socktype, proto, _, sockaddr in addresses:
         try:
-            with socket.socket(family, socktype, proto) as probe:
-                probe.settimeout(UDPST_HEALTHCHECK_TIMEOUT_SECONDS)
-                probe.sendto(UDPST_HEALTHCHECK_TOKEN, sockaddr)
-                response, _ = probe.recvfrom(128)
-                if response == UDPST_HEALTHCHECK_RESPONSE:
-                    return True
+            with socket.create_connection(sockaddr, UDPST_HEALTHCHECK_TIMEOUT_SECONDS):
+                return True
         except OSError:
             continue
     return False
 
 
-def get_udpst_server_status() -> dict[str, object]:
-    probe_host = "127.0.0.1" if UDPST_SERVER.host == "0.0.0.0" else UDPST_SERVER.host
-    if UDPST_SERVER.host == "::":
-        probe_host = "::1"
+def resolve_udpst_monitor_target(config: AppConfig | None) -> dict[str, object]:
+    udpst_url = (config.udpst_server_url if config else "").strip() if config else ""
+    udpst_port = config.udpst_server_port if config else None
+    parsed_url = urlparse(udpst_url)
+    host = parsed_url.hostname or ""
+    port = udpst_port if isinstance(udpst_port, int) else None
+    return {"url": udpst_url, "host": host, "port": port}
+
+
+def get_udpst_server_status(config: AppConfig | None) -> dict[str, object]:
+    target = resolve_udpst_monitor_target(config)
+    host = str(target.get("host") or "")
+    port = target.get("port")
+    if not host or port is None:
+        return {"is_running": False, "host": "-", "port": "-", "error": "Nicht konfiguriert."}
+
     try:
-        healthy = check_udpst_server_running(probe_host, UDPST_SERVER.port)
+        healthy = check_udpst_server_running(host, int(port))
     except OSError:
         healthy = False
 
     return {
-        "is_running": UDPST_SERVER.running and healthy,
-        "host": UDPST_SERVER.host,
-        "port": UDPST_SERVER.port,
-        "error": UDPST_SERVER.startup_error,
+        "is_running": healthy,
+        "host": host,
+        "port": port,
+        "error": None if healthy else "Nicht erreichbar.",
     }
-
-
-def start_udpst_server_for_all_devices(acs_api_url: str) -> None:
-    projection = quote("_id")
-    list_url = f"{acs_api_url}/devices/?projection={projection}"
-    response = requests.get(list_url, timeout=15)
-    response.raise_for_status()
-    devices = response.json()
-    if not isinstance(devices, list):
-        raise ValueError("ACS devices response is not a list")
-    for device in devices:
-        if not isinstance(device, dict):
-            continue
-        device_id = device.get("_id")
-        if not isinstance(device_id, str) or not device_id:
-            continue
-        queue_set_parameter_values_task(
-            acs_api_url,
-            device_id,
-            [("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Start", True, "xsd:boolean")],
-        )
 
 
 def to_decimal(value: object) -> Decimal | None:
@@ -1276,6 +1170,19 @@ def admin_required():
     return True
 
 
+def ensure_app_config_columns() -> None:
+    table_info = db.session.execute(text("PRAGMA table_info(app_config)")).fetchall()
+    existing_columns = {row[1] for row in table_info}
+
+    if "udpst_server_url" not in existing_columns:
+        db.session.execute(text("ALTER TABLE app_config ADD COLUMN udpst_server_url VARCHAR(500) NOT NULL DEFAULT ''"))
+    if "udpst_server_port" not in existing_columns:
+        db.session.execute(
+            text(f"ALTER TABLE app_config ADD COLUMN udpst_server_port INTEGER NOT NULL DEFAULT {UDPST_TEST_PORT}")
+        )
+    db.session.commit()
+
+
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings():
@@ -1284,23 +1191,53 @@ def settings():
 
     config = AppConfig.query.first()
     if config is None:
-        config = AppConfig(acs_api_url="http://genieacs:7557")
+        config = AppConfig(acs_api_url="http://genieacs:7557", udpst_server_url="", udpst_server_port=UDPST_TEST_PORT)
         db.session.add(config)
         db.session.commit()
 
     if request.method == "POST":
         acs_api_url = request.form.get("acs_api_url", "").strip()
+        udpst_server_url = request.form.get("udpst_server_url", "").strip()
+        udpst_server_port_raw = request.form.get("udpst_server_port", "").strip()
         if not acs_api_url:
             flash("ACS-API-URL darf nicht leer sein.", "danger")
-            return render_template("settings.html", config=config)
+            return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
+        if not udpst_server_url:
+            flash("UDPST-Server-URL darf nicht leer sein.", "danger")
+            return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
+
+        parsed_url = urlparse(udpst_server_url)
+        host = parsed_url.hostname or ""
+        if parsed_url.scheme.lower() != "https" or not host:
+            flash("UDPST-Server-URL muss mit https:// beginnen und einen Host enthalten.", "danger")
+            return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
+
+        try:
+            ip_address(host)
+        except ValueError:
+            if "." not in host or " " in host:
+                flash("UDPST-Server-URL muss eine gültige Domain oder IP-Adresse enthalten.", "danger")
+                return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
+
+        try:
+            udpst_server_port = int(udpst_server_port_raw)
+        except ValueError:
+            flash("UDPST-Port muss eine Zahl zwischen 1 und 65535 sein.", "danger")
+            return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
+
+        if udpst_server_port < 1 or udpst_server_port > 65535:
+            flash("UDPST-Port muss eine Zahl zwischen 1 und 65535 sein.", "danger")
+            return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
 
         config.acs_api_url = acs_api_url
+        config.udpst_server_url = udpst_server_url
+        config.udpst_server_port = udpst_server_port
         config.updated_at = datetime.now(UTC)
         db.session.commit()
         flash("Einstellungen gespeichert.", "success")
         return redirect(url_for("settings"))
 
-    return render_template("settings.html", config=config)
+    return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
 
 
 @app.route("/users", methods=["GET", "POST"])
@@ -1360,17 +1297,7 @@ def delete_user(user_id: int):
 
 with app.app_context():
     db.create_all()
-    try:
-        UDPST_SERVER.start()
-    except OSError as error:
-        UDPST_SERVER.mark_startup_error(error)
-
-    startup_config = AppConfig.query.first()
-    if startup_config and startup_config.acs_api_url:
-        try:
-            start_udpst_server_for_all_devices(startup_config.acs_api_url.rstrip("/"))
-        except (requests.RequestException, ValueError):
-            pass
+    ensure_app_config_columns()
 
 
 if __name__ == "__main__":

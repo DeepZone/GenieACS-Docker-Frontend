@@ -1,7 +1,7 @@
 import json
 import os
 from collections.abc import Iterable
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
@@ -23,6 +23,35 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 ONLINE_WINDOW_MINUTES = 15
+UTC = timezone.utc
+
+DASHBOARD_PROJECTION_FIELDS = [
+    "_id",
+    "_lastInform",
+    "InternetGatewayDevice.WANDevice",
+]
+
+DEVICES_PROJECTION_FIELDS = [
+    "_id",
+    "_lastInform",
+    "DeviceID.Manufacturer",
+    "DeviceID.ProductClass",
+    "DeviceID.SerialNumber",
+    "DeviceInfo.ModelName",
+    "InternetGatewayDevice.DeviceInfo.ModelName",
+]
+
+DEVICE_DETAIL_PROJECTION_FIELDS = [
+    "_id",
+    "_lastInform",
+    "DeviceID.Manufacturer",
+    "DeviceID.ProductClass",
+    "DeviceID.SerialNumber",
+    "DeviceInfo.ModelName",
+    "InternetGatewayDevice.DeviceInfo.ModelName",
+    "InternetGatewayDevice.WANDevice",
+    "InternetGatewayDevice.LANDevice",
+]
 
 
 @app.template_filter("bytes_to_human")
@@ -233,21 +262,7 @@ def load_dashboard_summary(acs_api_url: str) -> dict:
     active_since = active_since.timestamp() - (24 * 60 * 60)
     query = quote(f'{{"_lastInform":{{"$gte":"{datetime.fromtimestamp(active_since, UTC).isoformat()}"}}}}')
 
-    projection_fields = [
-        "_id",
-        "_lastInform",
-        "InternetGatewayDevice.WANDevice",
-        "InternetGatewayDevice.WANDevice.1.WANCommonInterfaceConfig",
-        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice",
-        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection",
-        "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection",
-        "InternetGatewayDevice.WANDevice.2.WANCommonInterfaceConfig",
-        "InternetGatewayDevice.WANDevice.2.WANConnectionDevice",
-        "InternetGatewayDevice.WANDevice.2.WANConnectionDevice.1.WANIPConnection",
-        "InternetGatewayDevice.WANDevice.2.WANConnectionDevice.1.WANPPPConnection",
-    ]
-
-    projection = quote(",".join(projection_fields))
+    projection = quote(",".join(DASHBOARD_PROJECTION_FIELDS))
     url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
 
     response = requests.get(url, timeout=10)
@@ -278,16 +293,7 @@ def load_dashboard_summary(acs_api_url: str) -> dict:
 
 
 def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
-    projection_fields = [
-        "_id",
-        "_lastInform",
-        "DeviceID.Manufacturer",
-        "DeviceID.ProductClass",
-        "DeviceID.SerialNumber",
-        "DeviceInfo.ModelName",
-        "InternetGatewayDevice.DeviceInfo.ModelName",
-    ]
-    projection = quote(",".join(projection_fields))
+    projection = quote(",".join(DEVICES_PROJECTION_FIELDS))
     url = f"{acs_api_url}/devices/?projection={projection}"
 
     response = requests.get(url, timeout=10)
@@ -331,18 +337,7 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
 
 
 def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
-    projection_fields = [
-        "_id",
-        "_lastInform",
-        "DeviceID.Manufacturer",
-        "DeviceID.ProductClass",
-        "DeviceID.SerialNumber",
-        "DeviceInfo.ModelName",
-        "InternetGatewayDevice.DeviceInfo.ModelName",
-        "InternetGatewayDevice.WANDevice",
-        "InternetGatewayDevice.LANDevice",
-    ]
-    projection = quote(",".join(projection_fields))
+    projection = quote(",".join(DEVICE_DETAIL_PROJECTION_FIELDS))
     query = quote(json.dumps({"_id": device_id}, separators=(",", ":")))
     url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
 
@@ -529,12 +524,17 @@ def iter_parameter_values(node: object, parameter_names: set[str]) -> Iterable[t
             yield from iter_parameter_values(item, parameter_names)
 
 
+def collect_parameter_values(node: object, parameter_names: set[str]) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for key, value in iter_parameter_values(node, parameter_names):
+        if key not in values and value not in (None, ""):
+            values[key] = value
+    return values
+
+
 def classify_connection(device: dict) -> str:
-    wan_access_types = {
-        str(value).upper()
-        for _, value in iter_parameter_values(device, {"WANAccessType", "LinkType", "Type"})
-        if value is not None
-    }
+    classifier_values = collect_parameter_values(device, {"WANAccessType", "LinkType", "Type"})
+    wan_access_types = {str(value).upper() for value in classifier_values.values()}
     if any("DSL" in value for value in wan_access_types):
         return "DSL"
     if any("FIB" in value or "GPON" in value for value in wan_access_types):
@@ -542,11 +542,8 @@ def classify_connection(device: dict) -> str:
     if any("CABLE" in value or "DOCSIS" in value for value in wan_access_types):
         return "Cable"
 
-    layer1_types = {
-        str(value).upper()
-        for _, value in iter_parameter_values(device, {"Layer1UpstreamMaxBitRate", "Layer1DownstreamMaxBitRate"})
-        if value is not None
-    }
+    layer1_values = collect_parameter_values(device, {"Layer1UpstreamMaxBitRate", "Layer1DownstreamMaxBitRate"})
+    layer1_types = {str(value).upper() for value in layer1_values.values()}
     if layer1_types:
         return "DSL"
 
@@ -554,8 +551,8 @@ def classify_connection(device: dict) -> str:
 
 
 def extract_traffic_bytes(device: dict) -> tuple[Decimal, Decimal]:
-    rx_names = {"TotalBytesReceived", "BytesReceived", "X_AVM-DE_TotalBytesReceived64"}
-    tx_names = {"TotalBytesSent", "BytesSent", "X_AVM-DE_TotalBytesSent64"}
+    rx_names = {"TotalBytesReceived", "BytesReceived", "EthernetBytesReceived"}
+    tx_names = {"TotalBytesSent", "BytesSent", "EthernetBytesSent"}
 
     rx_values = [to_decimal(value) for _, value in iter_parameter_values(device, rx_names)]
     tx_values = [to_decimal(value) for _, value in iter_parameter_values(device, tx_names)]
@@ -583,11 +580,7 @@ def extract_wan_info(device: dict) -> dict[str, str]:
         "UpstreamCurrRate",
         "DownstreamCurrRate",
     }
-    values = {
-        key: value
-        for key, value in iter_parameter_values(device, wan_params)
-        if value not in (None, "")
-    }
+    values = collect_parameter_values(device, wan_params)
 
     return {
         "status": str(values.get("ConnectionStatus", "-")),
@@ -621,11 +614,7 @@ def extract_wan_common_info(device: dict) -> dict[str, str]:
         "Layer1DownstreamMaxBitRate",
         "X_AVM-DE_InternetConnectionLinkType",
     }
-    values = {
-        key: value
-        for key, value in iter_parameter_values(device, common_params)
-        if value not in (None, "")
-    }
+    values = collect_parameter_values(device, common_params)
 
     return {
         "wan_access_type": str(values.get("WANAccessType", "-")),
@@ -657,11 +646,7 @@ def extract_wan_dsl_info(device: dict) -> dict[str, str]:
         "LinkEncapsulationUsed",
         "DataPath",
     }
-    values = {
-        key: value
-        for key, value in iter_parameter_values(device, dsl_params)
-        if value not in (None, "")
-    }
+    values = collect_parameter_values(device, dsl_params)
 
     return {
         "status": str(values.get("Status", "-")),
@@ -687,11 +672,7 @@ def extract_wan_cable_info(device: dict) -> dict[str, str]:
         "PhysicalLinkStatus",
         "WANAccessType",
     }
-    values = {
-        key: value
-        for key, value in iter_parameter_values(device, cable_params)
-        if value not in (None, "")
-    }
+    values = collect_parameter_values(device, cable_params)
 
     return {
         "wan_access_type": str(values.get("WANAccessType", "-")),

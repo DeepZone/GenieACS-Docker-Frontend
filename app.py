@@ -1128,8 +1128,7 @@ def check_udpst_server_running(host: str, port: int) -> bool:
 def resolve_udpst_monitor_target(config: AppConfig | None) -> dict[str, object]:
     udpst_url = (config.udpst_server_url if config else "").strip() if config else ""
     udpst_port = config.udpst_server_port if config else None
-    parsed_url = urlparse(udpst_url)
-    host = parsed_url.hostname or ""
+    host = extract_udpst_host(udpst_url)
     port = udpst_port if isinstance(udpst_port, int) else None
     return {"url": udpst_url, "host": host, "port": port}
 
@@ -1152,6 +1151,16 @@ def get_udpst_server_status(config: AppConfig | None) -> dict[str, object]:
         "port": port,
         "error": None if healthy else "Nicht erreichbar.",
     }
+
+
+def extract_udpst_host(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return ""
+
+    parse_target = value if "://" in value else f"//{value}"
+    parsed_url = urlparse(parse_target)
+    return parsed_url.hostname or ""
 
 
 def to_decimal(value: object) -> Decimal | None:
@@ -1206,10 +1215,9 @@ def settings():
             flash("UDPST-Server-URL darf nicht leer sein.", "danger")
             return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
 
-        parsed_url = urlparse(udpst_server_url)
-        host = parsed_url.hostname or ""
-        if parsed_url.scheme.lower() != "https" or not host:
-            flash("UDPST-Server-URL muss mit https:// beginnen und einen Host enthalten.", "danger")
+        host = extract_udpst_host(udpst_server_url)
+        if not host:
+            flash("UDPST-Server muss eine Hostname- oder IP-Angabe enthalten.", "danger")
             return render_template("settings.html", config=config, udpst_server_status=get_udpst_server_status(config))
 
         try:

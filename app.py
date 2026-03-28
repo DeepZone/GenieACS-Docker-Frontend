@@ -49,6 +49,8 @@ DEVICE_DETAIL_PROJECTION_FIELDS = [
     "InternetGatewayDevice.DeviceInfo.ModelName",
     "InternetGatewayDevice.WANDevice",
     "InternetGatewayDevice.LANDevice",
+    "InternetGatewayDevice.X_AVM-DE_SpeedtestServer",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity",
 ]
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
@@ -271,6 +273,79 @@ def device_detail(device_id: str):
     )
 
 
+@app.post("/devices/<device_id>/udpst")
+@login_required
+def device_udpst_action(device_id: str):
+    config = AppConfig.query.first()
+    if not config or not config.acs_api_url:
+        flash("Keine ACS-API-URL konfiguriert.", "danger")
+        return redirect(url_for("device_detail", device_id=device_id))
+
+    action = request.form.get("action", "").strip()
+    acs_api_url = config.acs_api_url.rstrip("/")
+
+    try:
+        if action == "start_udp_server":
+            queue_set_parameter_values_task(
+                acs_api_url,
+                device_id,
+                [
+                    ("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Start", True, "xsd:boolean"),
+                ],
+            )
+            flash("UDP Speedtest-Server wurde gestartet.", "success")
+        elif action == "stop_udp_server":
+            queue_set_parameter_values_task(
+                acs_api_url,
+                device_id,
+                [
+                    ("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Stop", True, "xsd:boolean"),
+                ],
+            )
+            flash("UDP Speedtest-Server wurde gestoppt.", "info")
+        elif action == "run_udpst_test":
+            host = request.form.get("test_host", "").strip()
+            port_raw = request.form.get("test_port", "").strip()
+            role = request.form.get("test_role", "Receiver").strip()
+            if not host:
+                flash("Bitte einen UDPST-Test-Host angeben.", "warning")
+                return redirect(url_for("device_detail", device_id=device_id))
+            try:
+                port = int(port_raw) if port_raw else 25000
+            except ValueError:
+                flash("Ungültiger UDPST-Port.", "warning")
+                return redirect(url_for("device_detail", device_id=device_id))
+            if role not in {"Receiver", "Sender"}:
+                role = "Receiver"
+
+            queue_set_parameter_values_task(
+                acs_api_url,
+                device_id,
+                [
+                    ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Host", host, "xsd:string"),
+                    ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Port", port, "xsd:unsignedInt"),
+                    ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Role", role, "xsd:string"),
+                    ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
+                ],
+            )
+            flash("UDPST-Test wurde gestartet. Ergebnisse erscheinen nach dem nächsten Inform.", "success")
+        elif action == "abort_udpst_test":
+            queue_set_parameter_values_task(
+                acs_api_url,
+                device_id,
+                [
+                    ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Abort", True, "xsd:boolean"),
+                ],
+            )
+            flash("UDPST-Testabbruch wurde ausgelöst.", "info")
+        else:
+            flash("Unbekannte UDPST-Aktion.", "warning")
+    except requests.RequestException:
+        flash("ACS-API ist derzeit nicht erreichbar.", "danger")
+
+    return redirect(url_for("device_detail", device_id=device_id))
+
+
 def load_dashboard_summary(acs_api_url: str) -> dict:
     active_since = datetime.now(UTC).replace(microsecond=0)
     active_since = active_since.timestamp() - (24 * 60 * 60)
@@ -379,6 +454,7 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
     wan_cable_info = extract_wan_cable_info(device)
     connection_class = classify_connection(device)
     wifi_radios = extract_wifi_radios(device)
+    udpst_info = extract_udpst_info(device)
 
     wan_common_rows = build_info_rows(
         wan_common_info,
@@ -468,6 +544,7 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
         "total_tx_bytes": int(tx),
         "internet_sections": internet_sections,
         "wifi_radios": wifi_radios,
+        "udpst": udpst_info,
     }
 
 
@@ -871,6 +948,120 @@ def extract_wifi_radios(device: dict) -> list[dict[str, str]]:
 
     radios.sort(key=lambda item: item["interface"])
     return radios
+
+
+def extract_udpst_info(device: dict) -> dict[str, object]:
+    speedtest_server = device.get("InternetGatewayDevice", {}).get("X_AVM-DE_SpeedtestServer", {})
+    diagnostic_tools = device.get("InternetGatewayDevice", {}).get("X_AVM-DE_DiagnosticTools", {})
+    ip_layer_capacity = diagnostic_tools.get("IPLayerCapacity", {}) if isinstance(diagnostic_tools, dict) else {}
+
+    udp_server = speedtest_server.get("UDP", {}) if isinstance(speedtest_server, dict) else {}
+    control = ip_layer_capacity.get("Control", {}) if isinstance(ip_layer_capacity, dict) else {}
+    config = ip_layer_capacity.get("Config", {}) if isinstance(ip_layer_capacity, dict) else {}
+    result = ip_layer_capacity.get("Result", {}) if isinstance(ip_layer_capacity, dict) else {}
+
+    raw_json_result = get_nested_acs_value(result, ["Result"]) or ""
+    parsed_json_result = parse_udpst_json_result(raw_json_result)
+    chart_points = extract_udpst_incremental_chart(parsed_json_result)
+    summary = extract_udpst_summary(parsed_json_result)
+
+    return {
+        "server_state": get_nested_acs_value(udp_server, ["State"]) or "-",
+        "server_port": get_nested_acs_value(udp_server, ["Port"]) or "-",
+        "server_port_bidirect": get_nested_acs_value(udp_server, ["PortBidirect"]) or "-",
+        "server_wan_access": get_nested_acs_value(udp_server, ["WANAccess"]) or "-",
+        "server_result_text": get_nested_acs_value(udp_server, ["Result"]) or "-",
+        "test_host": get_nested_acs_value(config, ["Host"]) or "",
+        "test_port": get_nested_acs_value(config, ["Port"]) or "25000",
+        "test_role": get_nested_acs_value(config, ["Role"]) or "Receiver",
+        "control_state": get_nested_acs_value(control, ["State"]) or "-",
+        "result_success": get_nested_acs_value(result, ["Success"]) or "-",
+        "result_message": get_nested_acs_value(result, ["Message"]) or "-",
+        "result_json_text": raw_json_result,
+        "result_json_pretty": json.dumps(parsed_json_result, ensure_ascii=False, indent=2) if parsed_json_result else "",
+        "summary_rows": summary,
+        "chart_points": chart_points,
+    }
+
+
+def parse_udpst_json_result(raw_result: str) -> dict:
+    if not raw_result:
+        return {}
+    try:
+        parsed = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def extract_udpst_summary(result_json: dict) -> list[dict[str, str]]:
+    if not isinstance(result_json, dict):
+        return []
+    summary = result_json.get("Output", {}).get("Summary", {})
+    if not isinstance(summary, dict):
+        return []
+    rows: list[dict[str, str]] = []
+    for key, value in summary.items():
+        rows.append({"label": str(key), "value": str(value)})
+    rows.sort(key=lambda item: item["label"].lower())
+    return rows
+
+
+def extract_udpst_incremental_chart(result_json: dict) -> list[dict[str, object]]:
+    if not isinstance(result_json, dict):
+        return []
+    output = result_json.get("Output", {})
+    if not isinstance(output, dict):
+        return []
+    incremental_result = output.get("IncrementalResult")
+    if not isinstance(incremental_result, list):
+        return []
+
+    candidates = ("IPLR", "IPLayerRate", "LayerRate", "Rate", "DataRate", "OfferedRate")
+    points: list[dict[str, object]] = []
+    max_value = Decimal(0)
+    for index, entry in enumerate(incremental_result, start=1):
+        if not isinstance(entry, dict):
+            continue
+        rate_value = None
+        for key in candidates:
+            if key in entry and entry[key] not in (None, ""):
+                rate_value = to_decimal(entry[key])
+                if rate_value is not None:
+                    break
+        if rate_value is None:
+            continue
+        max_value = max(max_value, rate_value)
+        points.append(
+            {
+                "label": f"Intervall {index}",
+                "value": float(rate_value),
+                "raw_key": key,
+                "raw_value": str(entry.get(key)),
+                "percent": 0.0,
+            }
+        )
+
+    if max_value > 0:
+        for point in points:
+            point["percent"] = min(100.0, round((Decimal(str(point["value"])) / max_value) * 100, 2))
+    return points
+
+
+def queue_set_parameter_values_task(
+    acs_api_url: str,
+    device_id: str,
+    parameter_values: list[tuple[str, object, str]],
+) -> None:
+    task_url = f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks?timeout=10000&connection_request"
+    payload = {
+        "name": "setParameterValues",
+        "parameterValues": [[name, value, value_type] for name, value, value_type in parameter_values],
+    }
+    response = requests.post(task_url, json=payload, timeout=10)
+    response.raise_for_status()
 
 
 def to_decimal(value: object) -> Decimal | None:

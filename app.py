@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -51,6 +52,15 @@ DEVICE_DETAIL_PROJECTION_FIELDS = [
     "InternetGatewayDevice.LANDevice",
     "InternetGatewayDevice.X_AVM-DE_SpeedtestServer",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity",
+]
+
+UDPST_STATUS_PARAMETER_NAMES = [
+    "InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.State",
+    "InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Result",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.State",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Success",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Message",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.JSONResult",
 ]
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
@@ -285,25 +295,7 @@ def device_udpst_action(device_id: str):
     acs_api_url = config.acs_api_url.rstrip("/")
 
     try:
-        if action == "start_udp_server":
-            queue_set_parameter_values_task(
-                acs_api_url,
-                device_id,
-                [
-                    ("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Start", True, "xsd:boolean"),
-                ],
-            )
-            flash("UDP Speedtest-Server wurde gestartet.", "success")
-        elif action == "stop_udp_server":
-            queue_set_parameter_values_task(
-                acs_api_url,
-                device_id,
-                [
-                    ("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Stop", True, "xsd:boolean"),
-                ],
-            )
-            flash("UDP Speedtest-Server wurde gestoppt.", "info")
-        elif action == "run_udpst_test":
+        if action == "run_udpst_test":
             host = request.form.get("test_host", "").strip()
             port_raw = request.form.get("test_port", "").strip()
             role = request.form.get("test_role", "Receiver").strip()
@@ -322,13 +314,20 @@ def device_udpst_action(device_id: str):
                 acs_api_url,
                 device_id,
                 [
+                    ("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Start", True, "xsd:boolean"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Host", host, "xsd:string"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Port", port, "xsd:unsignedInt"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Role", role, "xsd:string"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
             )
-            flash("UDPST-Test wurde gestartet. Ergebnisse erscheinen nach dem nächsten Inform.", "success")
+            if poll_udpst_result(acs_api_url, device_id):
+                flash("UDPST-Test wurde gestartet und Ergebnis aktiv vom Gerät abgefragt.", "success")
+            else:
+                flash(
+                    "UDPST-Test wurde gestartet. Ergebnisabfrage läuft, endgültige Resultate sind noch nicht verfügbar.",
+                    "warning",
+                )
         elif action == "abort_udpst_test":
             queue_set_parameter_values_task(
                 acs_api_url,
@@ -1064,6 +1063,60 @@ def queue_set_parameter_values_task(
     response.raise_for_status()
 
 
+def queue_get_parameter_values_task(
+    acs_api_url: str,
+    device_id: str,
+    parameter_names: list[str],
+) -> None:
+    task_url = f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks?timeout=10000&connection_request"
+    payload = {
+        "name": "getParameterValues",
+        "parameterNames": parameter_names,
+    }
+    response = requests.post(task_url, json=payload, timeout=10)
+    response.raise_for_status()
+
+
+def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 90, poll_interval_seconds: int = 3) -> bool:
+    deadline = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
+    while datetime.now(UTC) < deadline:
+        queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
+        device = load_device_detail(acs_api_url, device_id)
+        if not device:
+            continue
+        udpst_info = extract_udpst_info(device)
+        control_state = str(udpst_info.get("control_state", "")).strip()
+        result_message = str(udpst_info.get("result_message", "")).strip()
+        result_success = str(udpst_info.get("result_success", "")).strip()
+        running_states = {"Requested", "Running", "InProgress", "Active"}
+        if control_state and control_state not in running_states and (result_message != "-" or result_success != "-"):
+            return True
+        if poll_interval_seconds > 0:
+            time.sleep(poll_interval_seconds)
+    return False
+
+
+def start_udpst_server_for_all_devices(acs_api_url: str) -> None:
+    projection = quote("_id")
+    list_url = f"{acs_api_url}/devices/?projection={projection}"
+    response = requests.get(list_url, timeout=15)
+    response.raise_for_status()
+    devices = response.json()
+    if not isinstance(devices, list):
+        raise ValueError("ACS devices response is not a list")
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        device_id = device.get("_id")
+        if not isinstance(device_id, str) or not device_id:
+            continue
+        queue_set_parameter_values_task(
+            acs_api_url,
+            device_id,
+            [("InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Start", True, "xsd:boolean")],
+        )
+
+
 def to_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -1164,6 +1217,12 @@ def delete_user(user_id: int):
 
 with app.app_context():
     db.create_all()
+    startup_config = AppConfig.query.first()
+    if startup_config and startup_config.acs_api_url:
+        try:
+            start_udpst_server_for_all_devices(startup_config.acs_api_url.rstrip("/"))
+        except (requests.RequestException, ValueError):
+            pass
 
 
 if __name__ == "__main__":

@@ -136,16 +136,9 @@
                   <dt class="col-sm-5">WAN Access</dt>
                   <dd class="col-sm-7">{{ device.udpst.server_wan_access }}</dd>
                 </dl>
-                <div class="d-flex gap-2">
-                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
-                    <input type="hidden" name="action" value="start_udp_server">
-                    <button type="submit" class="btn btn-success btn-sm">UDP-Server starten</button>
-                  </form>
-                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
-                    <input type="hidden" name="action" value="stop_udp_server">
-                    <button type="submit" class="btn btn-outline-secondary btn-sm">UDP-Server stoppen</button>
-                  </form>
-                </div>
+                <p class="small text-muted mb-0">
+                  Der UDP-Server wird automatisch beim Container-Start sowie vor jedem UDPST-Test gestartet.
+                </p>
                 <p class="small text-muted mt-3 mb-0">Letztes Server-Resultat: {{ device.udpst.server_result_text }}</p>
               </div>
             </div>

@@ -2,7 +2,8 @@ import json
 import os
 import socket
 import time
-from threading import Lock
+from threading import Lock, Thread
+from uuid import uuid4
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -10,7 +11,7 @@ from ipaddress import ip_address
 from urllib.parse import quote, urlparse
 
 import requests
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
@@ -74,6 +75,9 @@ UDPST_DEBUG_TRACES: dict[str, list[dict[str, str]]] = {}
 UDPST_DEBUG_LOCK = Lock()
 UDPST_RUN_CONTEXTS: dict[str, dict[str, object]] = {}
 UDPST_RUN_CONTEXT_LOCK = Lock()
+UDPST_AJAX_JOBS: dict[str, dict[str, object]] = {}
+UDPST_AJAX_DEVICE_JOBS: dict[str, str] = {}
+UDPST_AJAX_LOCK = Lock()
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
 
@@ -311,6 +315,69 @@ def device_detail(device_id: str):
         udpst_debug_trace=get_udpst_debug_trace(device_id),
         udpst_running=bool(is_running or run_status in active_run_statuses),
     )
+
+
+@app.post("/api/devices/<device_id>/udpst/jobs")
+@login_required
+def start_udpst_ajax_job(device_id: str):
+    config = AppConfig.query.first()
+    if not config or not config.acs_api_url:
+        return jsonify({"ok": False, "error": "Keine ACS-API-URL konfiguriert."}), 400
+
+    payload = request.get_json(silent=True) or {}
+    selected_role = str(payload.get("role", "Receiver")).strip()
+    if selected_role not in {"Receiver", "Sender"}:
+        return jsonify({"ok": False, "error": "Ungültige Rolle. Erlaubt: Receiver oder Sender."}), 400
+
+    with UDPST_AJAX_LOCK:
+        existing_job_id = UDPST_AJAX_DEVICE_JOBS.get(device_id)
+        if existing_job_id:
+            existing_job = UDPST_AJAX_JOBS.get(existing_job_id, {})
+            if existing_job and str(existing_job.get("state")) in {"queued", "running"}:
+                return jsonify({"ok": False, "error": "Für dieses Gerät läuft bereits ein UDPST-Job.", "job_id": existing_job_id}), 409
+
+    job_id = uuid4().hex
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    job_data = {
+        "job_id": job_id,
+        "device_id": device_id,
+        "state": "queued",
+        "phase": 1,
+        "status_text": "Aktuelle ACS-Konfiguration wird gelesen",
+        "progress": 5,
+        "selected_role": selected_role,
+        "error": "",
+        "result_message": "",
+        "result_result": "",
+        "test_interval_secs": None,
+        "wait_seconds": 0,
+        "wait_remaining": 0,
+        "acs_snapshot": {},
+        "device_udpst": None,
+        "updated_at": started_at,
+    }
+    with UDPST_AJAX_LOCK:
+        UDPST_AJAX_JOBS[job_id] = job_data
+        UDPST_AJAX_DEVICE_JOBS[device_id] = job_id
+
+    monitor_target = resolve_udpst_monitor_target(config)
+    worker = Thread(
+        target=run_udpst_ajax_job,
+        args=(config.acs_api_url.rstrip("/"), device_id, job_id, selected_role, monitor_target),
+        daemon=True,
+    )
+    worker.start()
+    return jsonify({"ok": True, "job_id": job_id, "state": "queued"})
+
+
+@app.get("/api/devices/<device_id>/udpst/jobs/<job_id>")
+@login_required
+def get_udpst_ajax_job_status(device_id: str, job_id: str):
+    with UDPST_AJAX_LOCK:
+        job = dict(UDPST_AJAX_JOBS.get(job_id, {}))
+    if not job or str(job.get("device_id")) != device_id:
+        return jsonify({"ok": False, "error": "Job nicht gefunden."}), 404
+    return jsonify({"ok": True, "job": job})
 
 
 @app.post("/devices/<device_id>/udpst")
@@ -1380,6 +1447,164 @@ def build_udpst_debug_details(
         {"label": "stale_result", "value": "Ja" if bool(freshness.get("stale_result")) else "Nein"},
         {"label": "new_result_for_current_run", "value": "Ja" if bool(freshness.get("has_fresh_result")) else "Nein"},
     ]
+
+
+def update_udpst_ajax_job(job_id: str, **kwargs) -> dict[str, object]:
+    with UDPST_AJAX_LOCK:
+        current = dict(UDPST_AJAX_JOBS.get(job_id, {}))
+        current.update(kwargs)
+        current["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        UDPST_AJAX_JOBS[job_id] = current
+        return dict(current)
+
+
+def finish_udpst_ajax_job(job_id: str, state: str, **kwargs) -> dict[str, object]:
+    job = update_udpst_ajax_job(job_id, state=state, **kwargs)
+    device_id = str(job.get("device_id") or "")
+    if device_id:
+        with UDPST_AJAX_LOCK:
+            if UDPST_AJAX_DEVICE_JOBS.get(device_id) == job_id:
+                UDPST_AJAX_DEVICE_JOBS.pop(device_id, None)
+    return job
+
+
+def run_udpst_ajax_job(
+    acs_api_url: str,
+    device_id: str,
+    job_id: str,
+    selected_role: str,
+    monitor_target: dict[str, object],
+) -> None:
+    try:
+        update_udpst_ajax_job(job_id, state="running", phase=1, progress=10, status_text="Aktuelle ACS-Konfiguration wird gelesen")
+        device = load_device_detail(acs_api_url, device_id)
+        if not device:
+            finish_udpst_ajax_job(job_id, "failed", error="Gerät wurde im ACS nicht gefunden.", progress=100)
+            return
+
+        udpst = device.get("udpst", {}) if isinstance(device, dict) else {}
+        current_host = str(udpst.get("test_host") or "").strip()
+        current_port = str(udpst.get("test_port") or "").strip()
+        current_role = str(udpst.get("test_role") or "").strip()
+        current_interval_raw = udpst.get("test_interval_secs")
+
+        target_host = str(monitor_target.get("host") or "").strip()
+        target_port = monitor_target.get("port")
+        if not target_host or target_port is None:
+            finish_udpst_ajax_job(
+                job_id,
+                "failed",
+                error="UDPST-Start fehlgeschlagen: Host oder Port sind nicht konfiguriert.",
+                progress=100,
+            )
+            return
+
+        desired_port = str(target_port)
+        updates: list[tuple[str, object, str]] = []
+        update_udpst_ajax_job(
+            job_id,
+            phase=2,
+            progress=20,
+            status_text="Abweichungen werden geprüft",
+            acs_snapshot={
+                "host": current_host,
+                "port": current_port,
+                "role": current_role,
+                "test_interval_secs": current_interval_raw,
+            },
+        )
+        if current_host != target_host:
+            updates.append(("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Host", target_host, "xsd:string"))
+        if current_port != desired_port:
+            updates.append(("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Port", int(target_port), "xsd:unsignedInt"))
+        if current_role != selected_role:
+            updates.append(("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Role", selected_role, "xsd:string"))
+
+        if updates:
+            update_udpst_ajax_job(job_id, phase=3, progress=35, status_text="Host/Port/Role werden aktualisiert")
+            queue_set_parameter_values_task(acs_api_url, device_id, updates)
+        else:
+            update_udpst_ajax_job(job_id, phase=3, progress=35, status_text="Config bereits korrekt, kein Schreibvorgang nötig")
+
+        refreshed = load_device_detail(acs_api_url, device_id)
+        udpst_ref = refreshed.get("udpst", {}) if isinstance(refreshed, dict) else {}
+        interval_decimal = to_decimal(udpst_ref.get("test_interval_secs"))
+        if interval_decimal is None or interval_decimal <= 0:
+            finish_udpst_ajax_job(job_id, "failed", error="Ungültige oder fehlende Config.TestIntervalSecs.", progress=100)
+            return
+        interval_seconds = int(interval_decimal)
+        wait_seconds = interval_seconds + 2
+        update_udpst_ajax_job(job_id, test_interval_secs=interval_seconds, wait_seconds=wait_seconds)
+
+        update_udpst_ajax_job(job_id, phase=4, progress=45, status_text="Control.Start=true wird gesetzt")
+        queue_set_parameter_values_task(
+            acs_api_url,
+            device_id,
+            [("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean")],
+        )
+
+        update_udpst_ajax_job(job_id, phase=5, progress=55, status_text=f"Wartephase läuft ({wait_seconds}s)", wait_remaining=wait_seconds)
+        for remaining in range(wait_seconds, -1, -1):
+            update_udpst_ajax_job(job_id, wait_remaining=remaining, progress=min(75, 55 + int(((wait_seconds - remaining) / max(wait_seconds, 1)) * 20)))
+            time.sleep(1)
+
+        update_udpst_ajax_job(job_id, phase=6, progress=80, status_text="Result.Message wird abgefragt")
+        queue_get_parameter_values_task(
+            acs_api_url,
+            device_id,
+            ["InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Message"],
+        )
+        result_device = load_device_detail(acs_api_url, device_id)
+        result_udpst = result_device.get("udpst", {}) if isinstance(result_device, dict) else {}
+        result_message = str(result_udpst.get("result_message") or "").strip()
+
+        if result_message:
+            finish_udpst_ajax_job(
+                job_id,
+                "completed",
+                phase=8,
+                progress=100,
+                status_text="Ergebnis wird angezeigt",
+                result_message=result_message,
+                result_result="",
+                device_udpst=result_udpst,
+            )
+            return
+
+        update_udpst_ajax_job(job_id, phase=7, progress=90, status_text="Result.Result wird abgefragt")
+        queue_get_parameter_values_task(
+            acs_api_url,
+            device_id,
+            ["InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Result"],
+        )
+        final_device = load_device_detail(acs_api_url, device_id)
+        final_udpst = final_device.get("udpst", {}) if isinstance(final_device, dict) else {}
+        result_result = str(final_udpst.get("result_json_text") or "").strip()
+        if not result_result:
+            finish_udpst_ajax_job(
+                job_id,
+                "failed",
+                error="Result.Result ist leer oder ungültig.",
+                phase=8,
+                progress=100,
+                device_udpst=final_udpst,
+            )
+            return
+
+        finish_udpst_ajax_job(
+            job_id,
+            "completed",
+            phase=8,
+            progress=100,
+            status_text="Ergebnis wird angezeigt",
+            result_message="",
+            result_result=result_result,
+            device_udpst=final_udpst,
+        )
+    except requests.RequestException:
+        finish_udpst_ajax_job(job_id, "failed", error="ACS nicht erreichbar.", progress=100)
+    except Exception as exc:
+        finish_udpst_ajax_job(job_id, "failed", error=f"Unerwarteter Fehler: {exc}", progress=100)
 
 
 def queue_set_parameter_values_task(

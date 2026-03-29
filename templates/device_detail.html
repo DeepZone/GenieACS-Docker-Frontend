@@ -167,6 +167,37 @@
             </div>
           </div>
 
+          <h3 class="h6 text-muted mb-2">Live-Debug Kommunikation (Seite ↔ ACS)</h3>
+          {% if udpst_running %}
+            <div class="alert alert-info py-2 small mb-2">
+              Test läuft gerade. Diese Seite aktualisiert sich automatisch alle 3 Sekunden.
+            </div>
+          {% endif %}
+          {% if udpst_debug_trace %}
+            <div class="table-responsive mb-3">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Zeit (UTC)</th>
+                    <th>Phase</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in udpst_debug_trace|reverse %}
+                    <tr>
+                      <td class="text-nowrap">{{ row.timestamp }}</td>
+                      <td class="text-nowrap"><code>{{ row.stage }}</code></td>
+                      <td style="word-break: break-word;">{{ row.message }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="text-muted">Noch keine Kommunikations-Logs vorhanden. Nach dem Start sind hier sofort die ACS-Tasks sichtbar.</p>
+          {% endif %}
+
           <h3 class="h6 text-muted mb-2">Grafische Ausgabe (IncrementalResult)</h3>
           {% if device.udpst.chart_points %}
             <div class="vstack gap-2 mb-3">
@@ -242,4 +273,11 @@
     </div>
   {% endif %}
 </div>
+{% if udpst_running %}
+  <script>
+    setTimeout(function () {
+      window.location.reload();
+    }, 3000);
+  </script>
+{% endif %}
 {% endblock %}

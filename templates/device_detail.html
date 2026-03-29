@@ -156,15 +156,23 @@
                   <dt class="col-sm-5">TestIntervalSecs</dt>
                   <dd class="col-sm-7">{{ device.udpst.test_interval_secs }} s</dd>
                 </dl>
-                <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
-                  <input type="hidden" name="action" value="run_udpst_test">
-                  <div class="d-flex flex-wrap gap-2">
-                    <button type="submit" class="btn btn-primary btn-sm">UDPST-Test starten</button>
+                <div class="d-flex flex-wrap gap-2">
+                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
+                    <button type="submit" name="action" value="run_udpst_test" class="btn btn-primary btn-sm">
+                      UDPST-Test starten
+                    </button>
+                  </form>
+                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
+                    <button type="submit" name="action" value="abort_udpst_test" class="btn btn-outline-danger btn-sm">
+                      UDPST-Test abbrechen
+                    </button>
+                  </form>
+                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
                     <button type="submit" name="action" value="debug_udpst_refresh" class="btn btn-outline-secondary btn-sm">
                       Debug: Werte neu abrufen
                     </button>
-                  </div>
-                </form>
+                  </form>
+                </div>
               </div>
             </div>
           </div>

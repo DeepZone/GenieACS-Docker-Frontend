@@ -450,19 +450,30 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Host", host, "xsd:string"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Port", port, "xsd:unsignedInt"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Role", role, "xsd:string"),
-                    ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
+                connection_request=False,
             )
             append_udpst_debug_trace(
                 device_id,
                 "state",
-                "Control.Start=true wurde per setParameterValues an ACS gesendet (kombiniert mit Config.*).",
+                "Config.Host/Port/Role wurde per setParameterValues vorbereitet (ohne sofortigen Start).",
+            )
+            queue_set_parameter_values_task(
+                acs_api_url,
+                device_id,
+                [("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean")],
+                connection_request=True,
+            )
+            append_udpst_debug_trace(
+                device_id,
+                "state",
+                "Control.Start=true wurde als eigener setParameterValues-Task mit connection_request gesendet (ACS-UI-äquivalente Startphase).",
             )
             queue_connection_request_task(acs_api_url, device_id)
             append_udpst_debug_trace(
                 device_id,
                 "state",
-                "Zusätzlicher connection_request Task wurde angelegt, damit das CPE den Start zeitnah ausführt.",
+                "Zusätzlicher separater connection_request-Task wurde angelegt, um das CPE nach dem Starttask aktiv zu triggern.",
             )
             update_udpst_run_context(device_id, status="trigger_sent", trigger_sent=True)
             append_udpst_debug_trace(device_id, "state", "ACS-Task für Config.* + Control.Start wurde abgeschickt")
@@ -1533,7 +1544,7 @@ def run_udpst_ajax_job(
 
         if updates:
             update_udpst_ajax_job(job_id, phase=3, progress=35, status_text="Host/Port/Role werden aktualisiert")
-            queue_set_parameter_values_task(acs_api_url, device_id, updates)
+            queue_set_parameter_values_task(acs_api_url, device_id, updates, connection_request=False)
         else:
             update_udpst_ajax_job(job_id, phase=3, progress=35, status_text="Config bereits korrekt, kein Schreibvorgang nötig")
 
@@ -1622,41 +1633,89 @@ def queue_set_parameter_values_task(
     acs_api_url: str,
     device_id: str,
     parameter_values: list[tuple[str, object, str]],
+    *,
+    connection_request: bool = True,
 ) -> None:
-    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=True)
     payload = {
         "name": "setParameterValues",
         "parameterValues": [[name, value, value_type] for name, value, value_type in parameter_values],
     }
-    append_udpst_debug_trace(device_id, "acs->task", f"setParameterValues: {json.dumps(payload, ensure_ascii=False)}")
-    response = requests.post(task_url, json=payload, timeout=10)
-    response.raise_for_status()
-    append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} setParameterValues")
+    execute_acs_task(
+        acs_api_url,
+        device_id,
+        payload,
+        operation_name="setParameterValues",
+        connection_request=connection_request,
+    )
 
 
 def queue_get_parameter_values_task(
     acs_api_url: str,
     device_id: str,
     parameter_names: list[str],
+    *,
+    connection_request: bool = True,
 ) -> None:
-    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=True)
     payload = {
         "name": "getParameterValues",
         "parameterNames": parameter_names,
     }
-    append_udpst_debug_trace(device_id, "acs->task", f"getParameterValues: {json.dumps(payload, ensure_ascii=False)}")
-    response = requests.post(task_url, json=payload, timeout=10)
-    response.raise_for_status()
-    append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} getParameterValues")
+    execute_acs_task(
+        acs_api_url,
+        device_id,
+        payload,
+        operation_name="getParameterValues",
+        connection_request=connection_request,
+    )
 
 
 def queue_connection_request_task(acs_api_url: str, device_id: str) -> None:
-    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=False)
     payload = {"name": "connection_request"}
-    append_udpst_debug_trace(device_id, "acs->task", f"connection_request: {json.dumps(payload, ensure_ascii=False)}")
+    execute_acs_task(
+        acs_api_url,
+        device_id,
+        payload,
+        operation_name="connection_request",
+        connection_request=False,
+    )
+
+
+def execute_acs_task(
+    acs_api_url: str,
+    device_id: str,
+    payload: dict[str, object],
+    *,
+    operation_name: str,
+    connection_request: bool,
+) -> dict[str, object]:
+    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=connection_request)
+    append_udpst_debug_trace(
+        device_id,
+        "acs->request",
+        (
+            f"POST {task_url} operation={operation_name} "
+            f"payload={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
+        ),
+    )
     response = requests.post(task_url, json=payload, timeout=10)
     response.raise_for_status()
-    append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} connection_request")
+    response_preview = response.text.strip().replace("\n", " ")
+    if len(response_preview) > 400:
+        response_preview = f"{response_preview[:400]}…"
+    append_udpst_debug_trace(
+        device_id,
+        "acs<-response",
+        f"HTTP {response.status_code} operation={operation_name} body={response_preview or '-'}",
+    )
+    try:
+        parsed = response.json()
+    except ValueError:
+        parsed = {}
+    if isinstance(parsed, dict):
+        task_id = parsed.get("_id")
+        if task_id:
+            append_udpst_debug_trace(device_id, "acs-task", f"GenieACS Task-ID für {operation_name}: {task_id}")
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def build_acs_task_url(acs_api_url: str, device_id: str, connection_request: bool = False) -> str:

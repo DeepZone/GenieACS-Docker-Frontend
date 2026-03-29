@@ -200,69 +200,49 @@
             <p class="text-muted">Noch keine Kommunikations-Logs vorhanden. Nach dem Start sind hier sofort die ACS-Tasks sichtbar.</p>
           {% endif %}
 
-          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (2-Achsen-Diagramm, alle numerischen Werte aus Result.Result)</h3>
-          {% if device.udpst.chart_points %}
-            <div class="mb-3" style="height: 22rem;">
-              <canvas id="udpst-two-axis-chart" aria-label="UDPST Messwerte als Zwei-Achsen-Diagramm" role="img"></canvas>
-            </div>
-            <div class="table-responsive mb-3">
-              <table class="table table-sm align-middle mb-0">
-                <thead>
-                  <tr>
-                    <th>Messwert</th>
-                    <th>Rohwert</th>
-                    <th>Anteil (normalisiert)</th>
-                    <th>Quelle</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for point in device.udpst.chart_points %}
-                    <tr>
-                      <td>{{ point.label }} ({{ point.raw_key }})</td>
-                      <td>{{ point.raw_value }}</td>
-                      <td>{{ point.percent }}%</td>
-                      <td>{{ point.source_path }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
+          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (TR-471 / UDPST IncrementalResult)</h3>
+          {% if device.udpst.chart and device.udpst.chart.available %}
+            <div class="border rounded p-3 mb-3">
+              <div class="mb-3" style="height: 24rem;">
+                <canvas id="udpst-two-axis-chart" aria-label="UDPST Intervallmesswerte als Zwei-Achsen-Diagramm" role="img"></canvas>
+              </div>
+              <p class="small text-muted mb-0">
+                {{ device.udpst.chart.points }} Messpunkte aus <code>Output.IncrementalResult</code> ·
+                Linke Achse: IPLayerCapacity (Mbit/s) · Rechte Achse: ReorderedRatio (%)
+              </p>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
             <script>
               (function () {
-                const points = {{ device.udpst.chart_points | tojson }};
-                const labels = points.map((point) => point.label);
-                const rawValues = points.map((point) => Number(point.value || 0));
-                const normalizedValues = points.map((point) => Number(point.percent || 0));
+                const chartData = {{ device.udpst.chart | tojson }};
                 const ctx = document.getElementById('udpst-two-axis-chart');
 
-                if (!ctx || typeof Chart === 'undefined') {
+                if (!ctx || typeof Chart === 'undefined' || !chartData || !chartData.available) {
                   return;
                 }
 
                 new Chart(ctx, {
-                  type: 'bar',
+                  type: 'line',
                   data: {
-                    labels,
+                    labels: chartData.labels,
                     datasets: [
                       {
-                        type: 'bar',
-                        label: 'Rohwert',
-                        data: rawValues,
-                        yAxisID: 'yRaw',
-                        backgroundColor: 'rgba(13, 110, 253, 0.35)',
+                        label: 'IP Layer Capacity (Mbit/s)',
+                        data: chartData.ip_layer_capacity,
+                        yAxisID: 'yCapacity',
                         borderColor: 'rgba(13, 110, 253, 1)',
-                        borderWidth: 1,
+                        backgroundColor: 'rgba(13, 110, 253, 0.2)',
+                        tension: 0.2,
+                        pointRadius: 3
                       },
                       {
-                        type: 'line',
-                        label: 'Anteil in % (normalisiert)',
-                        data: normalizedValues,
-                        yAxisID: 'yPercent',
+                        label: 'Reordered Ratio (%)',
+                        data: chartData.reordered_ratio_percent,
+                        yAxisID: 'yReordered',
                         borderColor: 'rgba(220, 53, 69, 1)',
                         backgroundColor: 'rgba(220, 53, 69, 0.2)',
-                        tension: 0.25,
-                        pointRadius: 3,
+                        tension: 0.2,
+                        pointRadius: 3
                       }
                     ]
                   },
@@ -271,43 +251,37 @@
                     maintainAspectRatio: false,
                     interaction: {
                       mode: 'index',
-                      intersect: false,
+                      intersect: false
                     },
                     plugins: {
                       legend: {
-                        position: 'top',
-                      },
-                      tooltip: {
-                        callbacks: {
-                          label: function(context) {
-                            if (context.dataset.yAxisID === 'yPercent') {
-                              return context.dataset.label + ': ' + context.formattedValue + '%';
-                            }
-                            return context.dataset.label + ': ' + context.formattedValue;
-                          }
-                        }
+                        position: 'top'
                       }
                     },
                     scales: {
-                      yRaw: {
+                      x: {
+                        title: {
+                          display: true,
+                          text: 'Testintervall (Interval / Seconds)'
+                        }
+                      },
+                      yCapacity: {
                         type: 'linear',
                         position: 'left',
                         title: {
                           display: true,
-                          text: 'Rohwert'
+                          text: 'IP Layer Capacity (Mbit/s)'
                         }
                       },
-                      yPercent: {
+                      yReordered: {
                         type: 'linear',
                         position: 'right',
-                        min: 0,
-                        max: 100,
                         grid: {
                           drawOnChartArea: false
                         },
                         title: {
                           display: true,
-                          text: 'Anteil (%)'
+                          text: 'Reordered Ratio (%)'
                         }
                       }
                     }
@@ -316,7 +290,9 @@
               })();
             </script>
           {% else %}
-            <p class="text-muted">Noch keine numerischen Werte in Result.Result verfügbar.</p>
+            <div class="alert alert-secondary mb-3 py-2">
+              {{ device.udpst.chart.message if device.udpst.chart else "Kein Diagramm verfügbar." }}
+            </div>
           {% endif %}
 
           <h3 class="h6 text-muted mb-2">Summary</h3>

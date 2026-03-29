@@ -7,6 +7,16 @@
       <div class="card-body">
         <h2 class="h5">Neuen Benutzer anlegen</h2>
         <form method="post" class="vstack gap-2">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Vorname</label>
+              <input name="first_name" class="form-control" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Nachname</label>
+              <input name="last_name" class="form-control" />
+            </div>
+          </div>
           <div>
             <label class="form-label">Benutzername</label>
             <input name="username" class="form-control" required />
@@ -23,6 +33,10 @@
               <option value="admin">admin</option>
             </select>
           </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" value="1" id="debugEnabledNew" name="debug_enabled" />
+            <label class="form-check-label" for="debugEnabledNew">Debug-Ansichten für diesen Benutzer aktivieren</label>
+          </div>
           <button class="btn btn-primary" type="submit">Benutzer erstellen</button>
         </form>
       </div>
@@ -37,16 +51,26 @@
           <table class="table table-striped align-middle">
             <thead>
               <tr>
+                <th>Name</th>
                 <th>Benutzername</th>
                 <th>Rolle</th>
+                <th>Debug</th>
                 <th>Aktion</th>
               </tr>
             </thead>
             <tbody>
               {% for user in users %}
               <tr>
+                <td>{{ user.first_name }} {{ user.last_name }}</td>
                 <td>{{ user.username }}</td>
                 <td><span class="badge bg-secondary">{{ user.role }}</span></td>
+                <td>
+                  {% if user.debug_enabled %}
+                    <span class="badge bg-success">aktiv</span>
+                  {% else %}
+                    <span class="badge bg-secondary">aus</span>
+                  {% endif %}
+                </td>
                 <td>
                   {% if user.id != current_user.id %}
                   <form method="post" action="{{ url_for('delete_user', user_id=user.id) }}" onsubmit="return confirm('Benutzer wirklich löschen?');">

@@ -8,6 +8,16 @@
         <h1 class="h4 mb-3">Initiales Setup</h1>
         <p class="text-muted">Es existiert noch kein Benutzer. Bitte lege den ersten Admin-Zugang an.</p>
         <form method="post" class="vstack gap-3">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Vorname</label>
+              <input name="first_name" class="form-control" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Nachname</label>
+              <input name="last_name" class="form-control" />
+            </div>
+          </div>
           <div>
             <label class="form-label">Admin-Benutzername</label>
             <input name="username" class="form-control" required />

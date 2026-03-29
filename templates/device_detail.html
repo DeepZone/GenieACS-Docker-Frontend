@@ -188,66 +188,74 @@
                 </ul>
                 <div class="d-flex flex-wrap gap-2">
                   <button type="button" id="udpst-start-btn" class="btn btn-primary btn-sm">UDPST-Test starten (AJAX)</button>
-                  <button type="button" id="udpst-minimal-start-btn" class="btn btn-outline-primary btn-sm">Minimalstart testen</button>
+                  {% if show_debug %}
+                    <button type="button" id="udpst-minimal-start-btn" class="btn btn-outline-primary btn-sm">Minimalstart testen</button>
+                  {% endif %}
                   <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
                     <button type="submit" name="action" value="abort_udpst_test" class="btn btn-outline-danger btn-sm">
                       UDPST-Test abbrechen
                     </button>
                   </form>
-                  <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
-                    <button type="submit" name="action" value="debug_udpst_refresh" class="btn btn-outline-secondary btn-sm">
-                      Debug: Werte neu abrufen
-                    </button>
-                  </form>
+                  {% if show_debug %}
+                    <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
+                      <button type="submit" name="action" value="debug_udpst_refresh" class="btn btn-outline-secondary btn-sm">
+                        Debug: Werte neu abrufen
+                      </button>
+                    </form>
+                  {% endif %}
                 </div>
-                <hr>
-                <h4 class="h6 mb-2">Technischer Minimal-Debug</h4>
-                <p class="small text-muted mb-2">Nur relevant: <code>...Control.Start</code> als Trigger und <code>...Control.State</code> als Wahrheitsquelle.</p>
-                <dl class="row small mb-2">
-                  <dt class="col-sm-4">Aktueller Control.State</dt>
-                  <dd class="col-sm-8"><code id="udpst-minimal-control-state">{{ device.udpst.control_state or "-" }}</code></dd>
-                </dl>
-                <div class="mb-2">
-                  <label for="udpst-minimal-last-request" class="form-label small mb-1">Letzter ACS-Request</label>
-                  <pre id="udpst-minimal-last-request" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 11rem; overflow:auto;">{{ udpst_last_acs_request|tojson(indent=2) if udpst_last_acs_request else "{}" }}</pre>
-                </div>
-                <div class="mb-0">
-                  <label for="udpst-minimal-last-response" class="form-label small mb-1">Letzte ACS-Response</label>
-                  <pre id="udpst-minimal-last-response" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 11rem; overflow:auto;">{{ udpst_last_acs_response|tojson(indent=2) if udpst_last_acs_response else "{}" }}</pre>
-                </div>
+                {% if show_debug %}
+                  <hr>
+                  <h4 class="h6 mb-2">Technischer Minimal-Debug</h4>
+                  <p class="small text-muted mb-2">Nur relevant: <code>...Control.Start</code> als Trigger und <code>...Control.State</code> als Wahrheitsquelle.</p>
+                  <dl class="row small mb-2">
+                    <dt class="col-sm-4">Aktueller Control.State</dt>
+                    <dd class="col-sm-8"><code id="udpst-minimal-control-state">{{ device.udpst.control_state or "-" }}</code></dd>
+                  </dl>
+                  <div class="mb-2">
+                    <label for="udpst-minimal-last-request" class="form-label small mb-1">Letzter ACS-Request</label>
+                    <pre id="udpst-minimal-last-request" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 11rem; overflow:auto;">{{ udpst_last_acs_request|tojson(indent=2) if udpst_last_acs_request else "{}" }}</pre>
+                  </div>
+                  <div class="mb-0">
+                    <label for="udpst-minimal-last-response" class="form-label small mb-1">Letzte ACS-Response</label>
+                    <pre id="udpst-minimal-last-response" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 11rem; overflow:auto;">{{ udpst_last_acs_response|tojson(indent=2) if udpst_last_acs_response else "{}" }}</pre>
+                  </div>
+                {% endif %}
               </div>
             </div>
           </div>
 
-          <h3 class="h6 text-muted mb-2">Live-Debug Kommunikation (Seite ↔ ACS)</h3>
-          {% if udpst_running %}
-            <div class="alert alert-info py-2 small mb-2">
-              Test läuft gerade. Status und Ergebnis werden live per AJAX aktualisiert.
-            </div>
-          {% endif %}
-          {% if udpst_debug_trace %}
-            <div class="table-responsive mb-3">
-              <table class="table table-sm align-middle mb-0">
-                <thead>
-                  <tr>
-                    <th>Zeit (UTC)</th>
-                    <th>Phase</th>
-                    <th>Details</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for row in udpst_debug_trace|reverse %}
+          {% if show_debug %}
+            <h3 class="h6 text-muted mb-2">Live-Debug Kommunikation (Seite ↔ ACS)</h3>
+            {% if udpst_running %}
+              <div class="alert alert-info py-2 small mb-2">
+                Test läuft gerade. Status und Ergebnis werden live per AJAX aktualisiert.
+              </div>
+            {% endif %}
+            {% if udpst_debug_trace %}
+              <div class="table-responsive mb-3">
+                <table class="table table-sm align-middle mb-0">
+                  <thead>
                     <tr>
-                      <td class="text-nowrap">{{ row.timestamp }}</td>
-                      <td class="text-nowrap"><code>{{ row.stage }}</code></td>
-                      <td style="word-break: break-word;">{{ row.message }}</td>
+                      <th>Zeit (UTC)</th>
+                      <th>Phase</th>
+                      <th>Details</th>
                     </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <p class="text-muted">Noch keine Kommunikations-Logs vorhanden. Nach dem Start sind hier sofort die ACS-Tasks sichtbar.</p>
+                  </thead>
+                  <tbody>
+                    {% for row in udpst_debug_trace|reverse %}
+                      <tr>
+                        <td class="text-nowrap">{{ row.timestamp }}</td>
+                        <td class="text-nowrap"><code>{{ row.stage }}</code></td>
+                        <td style="word-break: break-word;">{{ row.message }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <p class="text-muted">Noch keine Kommunikations-Logs vorhanden. Nach dem Start sind hier sofort die ACS-Tasks sichtbar.</p>
+            {% endif %}
           {% endif %}
 
           <h3 class="h6 text-muted mb-2">Grafische Ausgabe (TR-471 / UDPST IncrementalResult)</h3>
@@ -307,34 +315,36 @@
             {% endif %}
           </div>
 
-          <h3 class="h6 text-muted mb-2">Debug-Informationen</h3>
-          {% if device.udpst.debug_details %}
-            <div class="table-responsive mb-3">
-              <table class="table table-sm align-middle mb-0">
-                <tbody>
-                  {% for row in device.udpst.debug_details %}
-                    <tr>
-                      <td class="text-muted">{{ row.label }}</td>
-                      <td>{{ row.value }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <p class="text-muted">Keine Debug-Informationen vorhanden.</p>
-          {% endif %}
-
-          <h3 class="h6 text-muted mb-2">Rohdaten (JSON)</h3>
-          <div id="udpst-json-container">
-            {% if device.udpst.result_json_pretty %}
-              <pre class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 24rem; overflow:auto;">{{ device.udpst.result_json_pretty }}</pre>
-            {% elif device.udpst.result_json_text %}
-              <pre class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 24rem; overflow:auto;">{{ device.udpst.result_json_text }}</pre>
+          {% if show_debug %}
+            <h3 class="h6 text-muted mb-2">Debug-Informationen</h3>
+            {% if device.udpst.debug_details %}
+              <div class="table-responsive mb-3">
+                <table class="table table-sm align-middle mb-0">
+                  <tbody>
+                    {% for row in device.udpst.debug_details %}
+                      <tr>
+                        <td class="text-muted">{{ row.label }}</td>
+                        <td>{{ row.value }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
             {% else %}
-              <p class="mb-0 text-muted">Kein JSON-Ergebnis vorhanden.</p>
+              <p class="text-muted">Keine Debug-Informationen vorhanden.</p>
             {% endif %}
-          </div>
+
+            <h3 class="h6 text-muted mb-2">Rohdaten (JSON)</h3>
+            <div id="udpst-json-container">
+              {% if device.udpst.result_json_pretty %}
+                <pre class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 24rem; overflow:auto;">{{ device.udpst.result_json_pretty }}</pre>
+              {% elif device.udpst.result_json_text %}
+                <pre class="bg-dark text-light p-3 rounded small mb-0" style="max-height: 24rem; overflow:auto;">{{ device.udpst.result_json_text }}</pre>
+              {% else %}
+                <p class="mb-0 text-muted">Kein JSON-Ergebnis vorhanden.</p>
+              {% endif %}
+            </div>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -461,35 +471,37 @@
       pollJob();
     });
 
-    minimalStartBtn.addEventListener('click', async function () {
-      minimalStartBtn.disabled = true;
-      setAlert('Minimalstart wird ausgeführt (nur Control.Start + Control.State) …', 'info');
-      try {
-        const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/udpst/minimalstart`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'}
-        });
-        const payload = await response.json();
-        if (minimalLastRequest) {
-          minimalLastRequest.textContent = JSON.stringify(payload.last_request || {}, null, 2);
+    if (minimalStartBtn) {
+      minimalStartBtn.addEventListener('click', async function () {
+        minimalStartBtn.disabled = true;
+        setAlert('Minimalstart wird ausgeführt (nur Control.Start + Control.State) …', 'info');
+        try {
+          const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/udpst/minimalstart`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+          });
+          const payload = await response.json();
+          if (minimalLastRequest) {
+            minimalLastRequest.textContent = JSON.stringify(payload.last_request || {}, null, 2);
+          }
+          if (minimalLastResponse) {
+            minimalLastResponse.textContent = JSON.stringify(payload.last_response || {}, null, 2);
+          }
+          if (!payload.ok) {
+            setAlert(payload.error || 'Minimalstart fehlgeschlagen.', 'danger');
+            return;
+          }
+          if (minimalControlState) {
+            minimalControlState.textContent = payload.control_state || '-';
+          }
+          setAlert(payload.message || 'Minimalstart abgeschlossen.', payload.is_running ? 'success' : 'warning');
+        } catch (error) {
+          setAlert(`Minimalstart-Request fehlgeschlagen: ${error}`, 'danger');
+        } finally {
+          minimalStartBtn.disabled = false;
         }
-        if (minimalLastResponse) {
-          minimalLastResponse.textContent = JSON.stringify(payload.last_response || {}, null, 2);
-        }
-        if (!payload.ok) {
-          setAlert(payload.error || 'Minimalstart fehlgeschlagen.', 'danger');
-          return;
-        }
-        if (minimalControlState) {
-          minimalControlState.textContent = payload.control_state || '-';
-        }
-        setAlert(payload.message || 'Minimalstart abgeschlossen.', payload.is_running ? 'success' : 'warning');
-      } catch (error) {
-        setAlert(`Minimalstart-Request fehlgeschlagen: ${error}`, 'danger');
-      } finally {
-        minimalStartBtn.disabled = false;
-      }
-    });
+      });
+    }
   })();
 </script>
 {% endblock %}

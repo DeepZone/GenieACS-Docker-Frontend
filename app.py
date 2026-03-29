@@ -863,8 +863,8 @@ def refresh_identity_from_device(acs_api_url: str, device_id: str) -> dict | Non
     if not device_id:
         return None
 
-    encoded_device_id, _ = encode_device_id_for_acs_url(device_id)
-    task_url = build_acs_task_url(acs_api_url, encoded_device_id, connection_request=True)
+    task_path_device_id, _ = prepare_device_id_for_genieacs_task_path(device_id)
+    task_url = build_acs_task_url(acs_api_url, task_path_device_id, connection_request=True)
     task_payload = {"name": "getParameterValues", "parameterNames": IDENTITY_PARAMETER_NAMES}
 
     try:
@@ -1743,18 +1743,17 @@ def queue_connection_request_task(acs_api_url: str, device_id: str) -> None:
     )
 
 
-def encode_device_id_for_acs_url(device_id: str) -> tuple[str, dict[str, object]]:
+def prepare_device_id_for_genieacs_task_path(device_id: str) -> tuple[str, dict[str, object]]:
     raw_device_id = str(device_id or "")
-    decoded_device_id = unquote(raw_device_id)
-    input_looked_pre_encoded = decoded_device_id != raw_device_id and quote(decoded_device_id, safe="") == raw_device_id
-    normalized_device_id = decoded_device_id if input_looked_pre_encoded else raw_device_id
-    encoded_device_id = quote(normalized_device_id, safe="")
-    encoded_twice = quote(encoded_device_id, safe="")
-    return encoded_device_id, {
+    decoded_candidate = unquote(raw_device_id)
+    input_looked_pre_encoded = decoded_candidate != raw_device_id and quote(decoded_candidate, safe="") == raw_device_id
+    detected_form = "bereits-encoded" if input_looked_pre_encoded else "roh"
+    task_path_device_id = quote(raw_device_id, safe="")
+    return task_path_device_id, {
         "raw_device_id": raw_device_id,
-        "normalized_device_id": normalized_device_id,
-        "encoded_device_id": encoded_device_id,
-        "encoded_twice": encoded_twice,
+        "decoded_candidate": decoded_candidate,
+        "detected_form": detected_form,
+        "task_path_device_id": task_path_device_id,
         "input_looked_pre_encoded": input_looked_pre_encoded,
     }
 
@@ -1787,8 +1786,8 @@ def execute_acs_task(
     operation_name: str,
     connection_request: bool,
 ) -> dict[str, object]:
-    encoded_device_id, encoding_meta = encode_device_id_for_acs_url(device_id)
-    task_url = build_acs_task_url(acs_api_url, encoded_device_id, connection_request=connection_request)
+    task_path_device_id, encoding_meta = prepare_device_id_for_genieacs_task_path(device_id)
+    task_url = build_acs_task_url(acs_api_url, task_path_device_id, connection_request=connection_request)
     payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     purpose = f"{operation_name} (connection_request={'active' if connection_request else 'inactive'})"
     append_udpst_debug_trace(device_id, "acs-meta", f"Request-Zweck: {purpose}")
@@ -1796,9 +1795,9 @@ def execute_acs_task(
         device_id,
         "acs-meta",
         (
-            f"Device-ID raw='{encoding_meta['raw_device_id']}' normalized='{encoding_meta['normalized_device_id']}' "
-            f"encoded_once='{encoding_meta['encoded_device_id']}' encoded_twice='{encoding_meta['encoded_twice']}' "
-            f"input_pre_encoded={encoding_meta['input_looked_pre_encoded']} used_single_encode=True"
+            f"Device-ID raw='{encoding_meta['raw_device_id']}' decoded_candidate='{encoding_meta['decoded_candidate']}' "
+            f"form='{encoding_meta['detected_form']}' task_path_id='{encoding_meta['task_path_device_id']}' "
+            f"input_pre_encoded={encoding_meta['input_looked_pre_encoded']}"
         ),
     )
     append_udpst_debug_trace(device_id, "acs-meta", f"Finale URL: {task_url}")

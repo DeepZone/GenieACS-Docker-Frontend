@@ -146,13 +146,41 @@
             <div class="col-12 col-xl-6">
               <div class="border rounded p-3 h-100">
                 <h3 class="h6 mb-3">IPLayerCapacity-Test (udpst)</h3>
+                {% set run = device.udpst.current_run %}
+                {% if run.status in ['pending', 'trigger_sent', 'device_run_detected'] %}
+                  <div class="alert alert-info py-2 small mb-3">
+                    {% if run.status == 'pending' %}
+                      Start angefordert: Warte auf ACS-Trigger.
+                    {% elif run.status == 'trigger_sent' %}
+                      Trigger an ACS gesendet. Warte auf tatsächlichen Testlauf auf dem Gerät.
+                    {% else %}
+                      Neuer Testlauf auf dem Gerät erkannt. Warte auf frisches Resultat.
+                    {% endif %}
+                  </div>
+                {% elif run.stale_detected or run.stale_result %}
+                  <div class="alert alert-warning py-2 small mb-3">
+                    {{ run.stale_warning or "Es wurde kein neuer Testlauf erkannt. Das gelesene Ergebnis stammt offenbar von einem früheren Lauf." }}
+                  </div>
+                {% elif run.completion_detected and run.has_fresh_result %}
+                  <div class="alert alert-success py-2 small mb-3">
+                    Neuer Testlauf wurde erkannt und abgeschlossen.
+                  </div>
+                {% endif %}
                 <dl class="row mb-3">
+                  <dt class="col-sm-5">Aktueller Lauf</dt>
+                  <dd class="col-sm-7"><code>{{ run.status }}</code></dd>
+                  <dt class="col-sm-5">Startzeit (UTC)</dt>
+                  <dd class="col-sm-7">{{ run.start_time_iso or "-" }}</dd>
                   <dt class="col-sm-5">Control-State</dt>
                   <dd class="col-sm-7">{{ device.udpst.control_state }}</dd>
                   <dt class="col-sm-5">Result.Success</dt>
                   <dd class="col-sm-7">{{ device.udpst.result_success }}</dd>
                   <dt class="col-sm-5">Result.Message</dt>
                   <dd class="col-sm-7">{{ device.udpst.result_message }}</dd>
+                  <dt class="col-sm-5">Output.BOMTime</dt>
+                  <dd class="col-sm-7">{{ run.bom_time_iso or "-" }}</dd>
+                  <dt class="col-sm-5">Output.EOMTime</dt>
+                  <dd class="col-sm-7">{{ run.eom_time_iso or "-" }}</dd>
                   <dt class="col-sm-5">TestIntervalSecs</dt>
                   <dd class="col-sm-7">{{ device.udpst.test_interval_secs }} s</dd>
                 </dl>
@@ -209,7 +237,12 @@
           {% endif %}
 
           <h3 class="h6 text-muted mb-2">Grafische Ausgabe (TR-471 / UDPST IncrementalResult)</h3>
-          {% if device.udpst.chart and device.udpst.chart.available %}
+          {% set show_fresh_outputs = (not device.udpst.current_run.start_time_iso) or device.udpst.current_run.has_fresh_result %}
+          {% if not show_fresh_outputs %}
+            <div class="alert alert-warning mb-3 py-2">
+              Es wurde kein neuer Testlauf erkannt. Diagramm und Summary werden erst bei einem frischen Ergebnis für den aktuellen Lauf angezeigt.
+            </div>
+          {% elif device.udpst.chart and device.udpst.chart.available %}
             <div class="border rounded p-3 mb-3">
               <div class="mb-3" style="height: 24rem;">
                 <canvas id="udpst-two-axis-chart" aria-label="UDPST Intervallmesswerte als Zwei-Achsen-Diagramm" role="img"></canvas>
@@ -304,7 +337,9 @@
           {% endif %}
 
           <h3 class="h6 text-muted mb-2">Summary</h3>
-          {% if device.udpst.summary_rows %}
+          {% if not show_fresh_outputs %}
+            <p class="text-muted">Summary für den aktuellen Lauf noch nicht verfügbar.</p>
+          {% elif device.udpst.summary_rows %}
             <div class="table-responsive mb-3">
               <table class="table table-sm align-middle mb-0">
                 <thead>

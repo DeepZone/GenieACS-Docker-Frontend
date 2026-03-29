@@ -75,6 +75,8 @@ UDPST_DEBUG_MAX_ENTRIES = int(os.getenv("UDPST_DEBUG_MAX_ENTRIES", "120"))
 UDPST_RUNNING_STATES = {"Requested", "Running", "InProgress", "Active", "Started"}
 UDPST_DEBUG_TRACES: dict[str, list[dict[str, str]]] = {}
 UDPST_DEBUG_LOCK = Lock()
+UDPST_RUN_CONTEXTS: dict[str, dict[str, object]] = {}
+UDPST_RUN_CONTEXT_LOCK = Lock()
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
 
@@ -297,6 +299,10 @@ def device_detail(device_id: str):
     else:
         detail_error = "Keine ACS-API-URL konfiguriert."
 
+    run_context = get_udpst_run_context(device_id)
+    run_status = str(run_context.get("status") or "")
+    active_run_statuses = {"pending", "trigger_sent", "device_run_detected"}
+    is_running = bool(device and str(device.get("udpst", {}).get("control_state", "")).strip() in UDPST_RUNNING_STATES)
     return render_template(
         "device_detail.html",
         config=config,
@@ -305,7 +311,7 @@ def device_detail(device_id: str):
         online_window_minutes=ONLINE_WINDOW_MINUTES,
         udpst_server_status=udpst_server_status,
         udpst_debug_trace=get_udpst_debug_trace(device_id),
-        udpst_running=bool(device and str(device.get("udpst", {}).get("control_state", "")).strip() in UDPST_RUNNING_STATES),
+        udpst_running=bool(is_running or run_status in active_run_statuses),
     )
 
 
@@ -328,11 +334,25 @@ def device_udpst_action(device_id: str):
     try:
         if action == "run_udpst_test":
             clear_udpst_debug_trace(device_id)
+            run_started_at = datetime.now(UTC).replace(microsecond=0)
+            set_udpst_run_context(
+                device_id,
+                {
+                    "status": "pending",
+                    "start_time_iso": run_started_at.isoformat(),
+                    "trigger_sent": False,
+                    "device_run_detected": False,
+                    "completion_detected": False,
+                    "stale_detected": False,
+                    "stale_warning": "",
+                },
+            )
             append_udpst_debug_trace(
                 device_id,
                 "request",
                 f"POST /devices/{device_id}/udpst empfangen, action='run_udpst_test'",
             )
+            append_udpst_debug_trace(device_id, "run", f"Startzeitpunkt des Requests (UTC): {run_started_at.isoformat()}")
             append_udpst_debug_trace(device_id, "action", "UDPST-Test gestartet (UI)")
             monitor_target = resolve_udpst_monitor_target(config)
             host = monitor_target.get("host", "")
@@ -345,6 +365,7 @@ def device_udpst_action(device_id: str):
             )
 
             if not host or port is None:
+                update_udpst_run_context(device_id, status="start_failed", stale_warning="Start abgebrochen: Host oder Port fehlt.")
                 flash(
                     "UDPST-Start fehlgeschlagen: UDPST-Serveradresse ist nicht vollständig konfiguriert (Host/Port).",
                     "warning",
@@ -373,24 +394,51 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
             )
+            update_udpst_run_context(device_id, status="trigger_sent", trigger_sent=True)
             append_udpst_debug_trace(device_id, "state", "ACS-Tasks für Config.* und Control.Start wurden abgeschickt")
             current_device = load_device_detail(acs_api_url, device_id)
+            if current_device and isinstance(current_device.get("udpst"), dict):
+                udpst_snapshot = current_device["udpst"]
+                append_udpst_debug_trace(
+                    device_id,
+                    "start-path",
+                    (
+                        "Pfadprüfung vor Polling: "
+                        f"IPLayerCapacity.Config.Host={udpst_snapshot.get('test_host') or '-'} "
+                        f"Port={udpst_snapshot.get('test_port') or '-'} "
+                        f"Role={udpst_snapshot.get('test_role') or '-'} "
+                        f"SpeedtestServer.UDP.State={udpst_snapshot.get('server_state') or '-'} "
+                        f"SpeedtestServer.UDP.Result={udpst_snapshot.get('server_result_text') or '-'}"
+                    ),
+                )
             test_interval_seconds, timeout_seconds, poll_interval_seconds = determine_udpst_polling(current_device)
             append_udpst_debug_trace(
                 device_id,
                 "state",
                 f"Control.Start gesetzt, TestIntervalSecs={test_interval_seconds}s, Polling bis {timeout_seconds}s mit Intervall {poll_interval_seconds}s",
             )
-            if poll_udpst_result(
+            poll_result = poll_udpst_result(
                 acs_api_url,
                 device_id,
                 timeout_seconds=timeout_seconds,
                 poll_interval_seconds=poll_interval_seconds,
-            ):
-                flash("UDPST-Test wurde gestartet und Ergebnis aktiv vom Gerät abgefragt.", "success")
+                start_time=run_started_at,
+            )
+            if poll_result.get("completed_with_fresh_result"):
+                flash("Neuer UDPST-Testlauf erkannt und erfolgreich abgeschlossen.", "success")
+            elif poll_result.get("stale_result_detected"):
+                flash(
+                    "Es wurde kein neuer Testlauf erkannt. Das gelesene Ergebnis stammt offenbar von einem früheren Lauf.",
+                    "warning",
+                )
+            elif poll_result.get("trigger_sent"):
+                flash(
+                    "Trigger an ACS gesendet. Es wurde aber noch kein neuer Testlauf auf dem Gerät bestätigt.",
+                    "warning",
+                )
             else:
                 flash(
-                    "UDPST-Test wurde gestartet. Ergebnisabfrage läuft, endgültige Resultate sind noch nicht verfügbar.",
+                    "UDPST-Trigger konnte nicht bestätigt werden. Bitte Debug-Trace und CPE-Status prüfen.",
                     "warning",
                 )
         elif action == "abort_udpst_test":
@@ -407,8 +455,8 @@ def device_udpst_action(device_id: str):
         elif action == "debug_udpst_refresh":
             append_udpst_debug_trace(device_id, "action", "Debug-Refresh manuell ausgelöst")
             queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
-            refreshed = poll_udpst_result(acs_api_url, device_id, timeout_seconds=25, poll_interval_seconds=2)
-            if refreshed:
+            poll_result = poll_udpst_result(acs_api_url, device_id, timeout_seconds=25, poll_interval_seconds=2)
+            if poll_result.get("completed_with_fresh_result") or poll_result.get("result_observed"):
                 flash("Debug-Abruf erfolgreich: UDPST-Parameter und Result.Result wurden erneut abgefragt.", "success")
             else:
                 flash(
@@ -422,9 +470,11 @@ def device_udpst_action(device_id: str):
             flash("Unbekannte UDPST-Aktion.", "warning")
     except requests.RequestException:
         append_udpst_debug_trace(device_id, "error", "ACS-API RequestException während UDPST-Aktion")
+        update_udpst_run_context(device_id, status="error")
         flash("ACS-API ist derzeit nicht erreichbar.", "danger")
     except Exception as exc:
         append_udpst_debug_trace(device_id, "error", f"Unerwarteter Fehler: {exc}")
+        update_udpst_run_context(device_id, status="error")
         flash(f"UDPST-Aktion fehlgeschlagen: {exc}", "danger")
 
     return redirect(url_for("device_detail", device_id=device_id))
@@ -1070,10 +1120,15 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
         device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Result", "Result"]
     ) or ""
     parsed_json_result = parse_udpst_json_result(raw_json_result)
+    device_id = str(device.get("_id") or "")
+    run_context = get_udpst_run_context(device_id) if device_id else {}
+    run_start_iso = str(run_context.get("start_time_iso") or "")
+    run_start_time = parse_udpst_output_timestamp(run_start_iso)
+    freshness = evaluate_udpst_result_freshness(parsed_json_result, run_start_time)
     chart_points = extract_udpst_result_chart(parsed_json_result)
     incremental_chart = extract_udpst_incremental_chart(parsed_json_result)
     summary = extract_udpst_summary(parsed_json_result)
-    debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points, incremental_chart)
+    debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points, incremental_chart, run_context, freshness)
 
     config_model = AppConfig.query.first()
     monitor_target = resolve_udpst_monitor_target(config_model)
@@ -1132,6 +1187,20 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
         "chart_points": chart_points,
         "chart": incremental_chart,
         "debug_details": debug_details,
+        "current_run": {
+            "status": str(run_context.get("status") or "idle"),
+            "start_time_iso": run_start_iso,
+            "trigger_sent": bool(run_context.get("trigger_sent")),
+            "device_run_detected": bool(run_context.get("device_run_detected")),
+            "completion_detected": bool(run_context.get("completion_detected")),
+            "stale_detected": bool(run_context.get("stale_detected")),
+            "stale_warning": str(run_context.get("stale_warning") or ""),
+            "has_fresh_result": bool(freshness.get("has_fresh_result")),
+            "stale_result": bool(freshness.get("stale_result")),
+            "bom_time_iso": str(freshness.get("bom_iso") or ""),
+            "eom_time_iso": str(freshness.get("eom_iso") or ""),
+            "latest_result_time_iso": str(freshness.get("latest_iso") or ""),
+        },
     }
 
 
@@ -1295,7 +1364,12 @@ def iter_udpst_numeric_entries(node: object, path: str = "Result") -> list[dict[
 
 
 def build_udpst_debug_details(
-    raw_result: str, parsed_result: dict, chart_points: list[dict[str, object]], incremental_chart: dict[str, object]
+    raw_result: str,
+    parsed_result: dict,
+    chart_points: list[dict[str, object]],
+    incremental_chart: dict[str, object],
+    run_context: dict[str, object],
+    freshness: dict[str, object],
 ) -> list[dict[str, str]]:
     output = parsed_result.get("Output", {}) if isinstance(parsed_result, dict) else {}
     incremental = output.get("IncrementalResult") if isinstance(output, dict) else None
@@ -1309,6 +1383,11 @@ def build_udpst_debug_details(
         {"label": "Incremental-Chart verfügbar", "value": "Ja" if bool(incremental_chart.get("available")) else "Nein"},
         {"label": "Incremental-Messpunkte", "value": str(incremental_chart.get("points") or 0)},
         {"label": "Erster Punkt Quelle", "value": str(first_point.get("source_path") or "-")},
+        {"label": "Aktueller Lauf Startzeitpunkt (UTC)", "value": str(run_context.get("start_time_iso") or "-")},
+        {"label": "Output.BOMTime", "value": str(freshness.get("bom_iso") or freshness.get("bom_raw") or "-")},
+        {"label": "Output.EOMTime", "value": str(freshness.get("eom_iso") or freshness.get("eom_raw") or "-")},
+        {"label": "stale_result", "value": "Ja" if bool(freshness.get("stale_result")) else "Nein"},
+        {"label": "new_result_for_current_run", "value": "Ja" if bool(freshness.get("has_fresh_result")) else "Nein"},
     ]
 
 
@@ -1357,9 +1436,25 @@ def determine_udpst_polling(device: dict | None) -> tuple[int, int, int]:
     return test_interval_seconds, timeout_seconds, poll_interval_seconds
 
 
-def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 90, poll_interval_seconds: int = 3) -> bool:
+def poll_udpst_result(
+    acs_api_url: str,
+    device_id: str,
+    timeout_seconds: int = 90,
+    poll_interval_seconds: int = 3,
+    start_time: datetime | None = None,
+) -> dict[str, bool]:
     deadline = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
+    state = {
+        "trigger_sent": bool(get_udpst_run_context(device_id).get("trigger_sent")),
+        "device_run_detected": False,
+        "result_observed": False,
+        "stale_result_detected": False,
+        "completed_with_fresh_result": False,
+        "timeout": False,
+    }
     append_udpst_debug_trace(device_id, "poll", f"Polling gestartet (timeout={timeout_seconds}s, interval={poll_interval_seconds}s)")
+    if start_time:
+        append_udpst_debug_trace(device_id, "poll", f"Vergleich gegen Startzeitpunkt (UTC): {start_time.isoformat()}")
     while datetime.now(UTC) < deadline:
         queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
         device = load_device_detail(acs_api_url, device_id)
@@ -1371,20 +1466,56 @@ def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 9
         result_message = str(udpst_info.get("result_message", "")).strip()
         result_success = str(udpst_info.get("result_success", "")).strip()
         result_json_text = str(udpst_info.get("result_json_text", "")).strip()
+        parsed_result = parse_udpst_json_result(result_json_text)
+        freshness = evaluate_udpst_result_freshness(parsed_result, start_time)
+        stale_result = bool(freshness.get("stale_result"))
+        has_fresh_result = bool(freshness.get("has_fresh_result"))
+        bom_time_iso = str(freshness.get("bom_iso") or freshness.get("bom_raw") or "-")
+        eom_time_iso = str(freshness.get("eom_iso") or freshness.get("eom_raw") or "-")
+        if control_state in UDPST_RUNNING_STATES:
+            state["device_run_detected"] = True
+            update_udpst_run_context(device_id, status="device_run_detected", device_run_detected=True)
         append_udpst_debug_trace(
             device_id,
             "poll-snapshot",
-            f"State={control_state or '-'} Success={result_success or '-'} Message={result_message or '-'} JSON={'ja' if bool(result_json_text) else 'nein'}",
+            (
+                f"State={control_state or '-'} Success={result_success or '-'} Message={result_message or '-'} "
+                f"JSON={'ja' if bool(result_json_text) else 'nein'} BOMTime={bom_time_iso} EOMTime={eom_time_iso} "
+                f"stale_result={'true' if stale_result else 'false'}"
+            ),
         )
-        if control_state and control_state not in UDPST_RUNNING_STATES and (
-            result_message not in {"", "-"} or result_success not in {"", "-"} or result_json_text
-        ):
-            append_udpst_debug_trace(device_id, "poll", "Finales Ergebnis erkannt")
-            return True
+        has_any_result = result_message not in {"", "-"} or result_success not in {"", "-"} or bool(result_json_text)
+        if has_any_result:
+            state["result_observed"] = True
+        if has_any_result and stale_result:
+            state["stale_result_detected"] = True
+            update_udpst_run_context(
+                device_id,
+                status="stale_result_detected",
+                stale_detected=True,
+                stale_warning="Es wurde kein neuer Testlauf erkannt. Das gelesene Ergebnis stammt offenbar von einem früheren Lauf.",
+            )
+            append_udpst_debug_trace(device_id, "poll", "Ergebnis vorhanden, aber als stale erkannt")
+        if control_state and control_state not in UDPST_RUNNING_STATES and has_fresh_result:
+            state["completed_with_fresh_result"] = True
+            update_udpst_run_context(
+                device_id,
+                status="completed",
+                completion_detected=True,
+                stale_detected=False,
+                stale_warning="",
+            )
+            append_udpst_debug_trace(device_id, "poll", "Finales Ergebnis erkannt und zeitlich als neuer Lauf bestätigt")
+            return state
         if poll_interval_seconds > 0:
             time.sleep(poll_interval_seconds)
-    append_udpst_debug_trace(device_id, "poll", "Timeout erreicht ohne finales Ergebnis")
-    return False
+    state["timeout"] = True
+    if state["stale_result_detected"]:
+        update_udpst_run_context(device_id, status="timeout_stale_only")
+    elif state["trigger_sent"]:
+        update_udpst_run_context(device_id, status="timeout_no_new_result")
+    append_udpst_debug_trace(device_id, "poll", "Timeout erreicht ohne finales, frisches Ergebnis")
+    return state
 
 
 def append_udpst_debug_trace(device_id: str, stage: str, message: str) -> None:
@@ -1409,6 +1540,84 @@ def get_udpst_debug_trace(device_id: str) -> list[dict[str, str]]:
 def clear_udpst_debug_trace(device_id: str) -> None:
     with UDPST_DEBUG_LOCK:
         UDPST_DEBUG_TRACES[device_id] = []
+
+
+def set_udpst_run_context(device_id: str, context: dict[str, object]) -> None:
+    with UDPST_RUN_CONTEXT_LOCK:
+        UDPST_RUN_CONTEXTS[device_id] = dict(context)
+
+
+def update_udpst_run_context(device_id: str, **kwargs) -> dict[str, object]:
+    with UDPST_RUN_CONTEXT_LOCK:
+        current = dict(UDPST_RUN_CONTEXTS.get(device_id, {}))
+        current.update(kwargs)
+        UDPST_RUN_CONTEXTS[device_id] = current
+        return dict(current)
+
+
+def get_udpst_run_context(device_id: str) -> dict[str, object]:
+    with UDPST_RUN_CONTEXT_LOCK:
+        return dict(UDPST_RUN_CONTEXTS.get(device_id, {}))
+
+
+def parse_udpst_output_timestamp(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric > 1e12:
+            numeric /= 1000.0
+        try:
+            return datetime.fromtimestamp(numeric, UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        text_value = value.strip()
+        if not text_value:
+            return None
+        try:
+            numeric = float(text_value)
+            if numeric > 1e12:
+                numeric /= 1000.0
+            return datetime.fromtimestamp(numeric, UTC)
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+        normalized = text_value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    return None
+
+
+def evaluate_udpst_result_freshness(parsed_result: dict, start_time: datetime | None) -> dict[str, object]:
+    output = parsed_result.get("Output", {}) if isinstance(parsed_result, dict) else {}
+    bom_raw = output.get("BOMTime") if isinstance(output, dict) else None
+    eom_raw = output.get("EOMTime") if isinstance(output, dict) else None
+    bom_time = parse_udpst_output_timestamp(bom_raw)
+    eom_time = parse_udpst_output_timestamp(eom_raw)
+    latest_time = max([candidate for candidate in [bom_time, eom_time] if candidate is not None], default=None)
+    stale_result = False
+    has_fresh_result = False
+    if start_time and latest_time:
+        stale_result = latest_time < start_time
+        has_fresh_result = latest_time >= start_time
+    elif start_time and (bom_time or eom_time):
+        has_fresh_result = any(candidate and candidate >= start_time for candidate in [bom_time, eom_time])
+        stale_result = not has_fresh_result
+    return {
+        "bom_raw": str(bom_raw or ""),
+        "eom_raw": str(eom_raw or ""),
+        "bom_iso": bom_time.isoformat() if bom_time else "",
+        "eom_iso": eom_time.isoformat() if eom_time else "",
+        "latest_iso": latest_time.isoformat() if latest_time else "",
+        "has_timestamp": bool(bom_time or eom_time),
+        "stale_result": stale_result,
+        "has_fresh_result": has_fresh_result,
+    }
 
 
 def resolve_udpst_server_addresses(host: str, port: int) -> list[tuple]:

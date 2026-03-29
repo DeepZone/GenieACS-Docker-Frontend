@@ -69,7 +69,7 @@ UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
 UDPST_TEST_ROLE = os.getenv("UDPST_TEST_ROLE", "Receiver")
 UDPST_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("UDPST_HEALTHCHECK_TIMEOUT_SECONDS", "1.5"))
 UDPST_DEBUG_MAX_ENTRIES = int(os.getenv("UDPST_DEBUG_MAX_ENTRIES", "120"))
-UDPST_RUNNING_STATES = {"Requested", "Running", "InProgress", "Active", "Started"}
+UDPST_RUNNING_STATE = "running"
 UDPST_DEBUG_TRACES: dict[str, list[dict[str, str]]] = {}
 UDPST_DEBUG_LOCK = Lock()
 UDPST_RUN_CONTEXTS: dict[str, dict[str, object]] = {}
@@ -299,7 +299,8 @@ def device_detail(device_id: str):
     run_context = get_udpst_run_context(device_id)
     run_status = str(run_context.get("status") or "")
     active_run_statuses = {"pending", "trigger_sent", "device_run_detected"}
-    is_running = bool(device and str(device.get("udpst", {}).get("control_state", "")).strip() in UDPST_RUNNING_STATES)
+    control_state = str((device or {}).get("udpst", {}).get("control_state", "")).strip().lower() if device else ""
+    is_running = bool(control_state == UDPST_RUNNING_STATE)
     return render_template(
         "device_detail.html",
         config=config,
@@ -429,6 +430,11 @@ def device_udpst_action(device_id: str):
             )
             if poll_result.get("completed_with_fresh_result"):
                 flash("Neuer UDPST-Testlauf erkannt und erfolgreich abgeschlossen.", "success")
+            elif poll_result.get("not_started_no_running"):
+                flash(
+                    "Der Start-Trigger wurde gesendet, aber Control.State wechselte nicht auf running. Der Test wurde daher nicht gestartet.",
+                    "warning",
+                )
             elif poll_result.get("stale_result_detected"):
                 flash(
                     "Es wurde kein neuer Testlauf erkannt. Das gelesene Ergebnis stammt offenbar von einem früheren Lauf.",
@@ -1446,6 +1452,8 @@ def poll_udpst_result(
     state = {
         "trigger_sent": bool(get_udpst_run_context(device_id).get("trigger_sent")),
         "device_run_detected": False,
+        "running_seen": False,
+        "not_started_no_running": False,
         "result_observed": False,
         "stale_result_detected": False,
         "completed_with_fresh_result": False,
@@ -1474,8 +1482,10 @@ def poll_udpst_result(
         has_fresh_result = bool(freshness.get("has_fresh_result"))
         bom_time_iso = str(freshness.get("bom_iso") or freshness.get("bom_raw") or "-")
         eom_time_iso = str(freshness.get("eom_iso") or freshness.get("eom_raw") or "-")
-        if control_state in UDPST_RUNNING_STATES:
+        control_state_is_running = control_state.lower() == UDPST_RUNNING_STATE
+        if control_state_is_running:
             state["device_run_detected"] = True
+            state["running_seen"] = True
             update_udpst_run_context(device_id, status="device_run_detected", device_run_detected=True)
         if control_state != previous_control_state and not first_state_change_logged:
             append_udpst_debug_trace(
@@ -1497,7 +1507,7 @@ def poll_udpst_result(
         has_any_result = result_message not in {"", "-"} or result_success not in {"", "-"} or bool(result_json_text)
         if has_any_result:
             state["result_observed"] = True
-        if has_any_result and stale_result:
+        if has_any_result and stale_result and state["running_seen"]:
             state["stale_result_detected"] = True
             update_udpst_run_context(
                 device_id,
@@ -1513,7 +1523,7 @@ def poll_udpst_result(
                 f"Frisches Ergebnis mit BOMTime={bom_time_iso} EOMTime={eom_time_iso} erkannt",
             )
             fresh_time_logged = True
-        if control_state and control_state not in UDPST_RUNNING_STATES and has_fresh_result:
+        if state["running_seen"] and control_state and not control_state_is_running and has_fresh_result:
             state["completed_with_fresh_result"] = True
             update_udpst_run_context(
                 device_id,
@@ -1527,6 +1537,23 @@ def poll_udpst_result(
         if poll_interval_seconds > 0:
             time.sleep(poll_interval_seconds)
     state["timeout"] = True
+    if state["trigger_sent"] and not state["running_seen"]:
+        state["not_started_no_running"] = True
+        update_udpst_run_context(
+            device_id,
+            status="not_started_no_running",
+            stale_detected=False,
+            stale_warning=(
+                "Der Start-Trigger wurde gesendet, aber Control.State wechselte nicht auf running. "
+                "Der Test wurde daher nicht gestartet."
+            ),
+        )
+        append_udpst_debug_trace(
+            device_id,
+            "poll",
+            "Timeout: Control.State wurde zu keinem Zeitpunkt 'running' -> Test gilt als nicht gestartet.",
+        )
+        return state
     if state["stale_result_detected"]:
         update_udpst_run_context(device_id, status="timeout_stale_only")
     elif state["trigger_sent"]:

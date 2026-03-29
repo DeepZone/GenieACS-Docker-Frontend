@@ -188,6 +188,7 @@
                 </ul>
                 <div class="d-flex flex-wrap gap-2">
                   <button type="button" id="udpst-start-btn" class="btn btn-primary btn-sm">UDPST-Test starten (AJAX)</button>
+                  <button type="button" id="udpst-minimal-start-btn" class="btn btn-outline-primary btn-sm">Minimalstart testen</button>
                   <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}" class="m-0">
                     <button type="submit" name="action" value="abort_udpst_test" class="btn btn-outline-danger btn-sm">
                       UDPST-Test abbrechen
@@ -198,6 +199,21 @@
                       Debug: Werte neu abrufen
                     </button>
                   </form>
+                </div>
+                <hr>
+                <h4 class="h6 mb-2">Technischer Minimal-Debug</h4>
+                <p class="small text-muted mb-2">Nur relevant: <code>...Control.Start</code> als Trigger und <code>...Control.State</code> als Wahrheitsquelle.</p>
+                <dl class="row small mb-2">
+                  <dt class="col-sm-4">Aktueller Control.State</dt>
+                  <dd class="col-sm-8"><code id="udpst-minimal-control-state">{{ device.udpst.control_state or "-" }}</code></dd>
+                </dl>
+                <div class="mb-2">
+                  <label for="udpst-minimal-last-request" class="form-label small mb-1">Letzter ACS-Request</label>
+                  <pre id="udpst-minimal-last-request" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 11rem; overflow:auto;">{{ udpst_last_acs_request|tojson(indent=2) if udpst_last_acs_request else "{}" }}</pre>
+                </div>
+                <div class="mb-0">
+                  <label for="udpst-minimal-last-response" class="form-label small mb-1">Letzte ACS-Response</label>
+                  <pre id="udpst-minimal-last-response" class="bg-dark text-light p-2 rounded small mb-0" style="max-height: 11rem; overflow:auto;">{{ udpst_last_acs_response|tojson(indent=2) if udpst_last_acs_response else "{}" }}</pre>
                 </div>
               </div>
             </div>
@@ -348,11 +364,15 @@
     const deviceId = {{ device.device_id|tojson if device else 'null' }};
     if (!deviceId) return;
     const startBtn = document.getElementById('udpst-start-btn');
+    const minimalStartBtn = document.getElementById('udpst-minimal-start-btn');
     const roleSelect = document.getElementById('udpst-role-select');
     const progressBar = document.getElementById('udpst-progress-bar');
     const alertBox = document.getElementById('udpst-ajax-alert');
     const statusCode = document.getElementById('udpst-run-status');
     const statusUpdated = document.getElementById('udpst-run-updated');
+    const minimalControlState = document.getElementById('udpst-minimal-control-state');
+    const minimalLastRequest = document.getElementById('udpst-minimal-last-request');
+    const minimalLastResponse = document.getElementById('udpst-minimal-last-response');
     let activeJobId = null;
 
     function setAlert(text, level) {
@@ -439,6 +459,36 @@
       }
       activeJobId = payload.job_id;
       pollJob();
+    });
+
+    minimalStartBtn.addEventListener('click', async function () {
+      minimalStartBtn.disabled = true;
+      setAlert('Minimalstart wird ausgeführt (nur Control.Start + Control.State) …', 'info');
+      try {
+        const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/udpst/minimalstart`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'}
+        });
+        const payload = await response.json();
+        if (minimalLastRequest) {
+          minimalLastRequest.textContent = JSON.stringify(payload.last_request || {}, null, 2);
+        }
+        if (minimalLastResponse) {
+          minimalLastResponse.textContent = JSON.stringify(payload.last_response || {}, null, 2);
+        }
+        if (!payload.ok) {
+          setAlert(payload.error || 'Minimalstart fehlgeschlagen.', 'danger');
+          return;
+        }
+        if (minimalControlState) {
+          minimalControlState.textContent = payload.control_state || '-';
+        }
+        setAlert(payload.message || 'Minimalstart abgeschlossen.', payload.is_running ? 'success' : 'warning');
+      } catch (error) {
+        setAlert(`Minimalstart-Request fehlgeschlagen: ${error}`, 'danger');
+      } finally {
+        minimalStartBtn.disabled = false;
+      }
     });
   })();
 </script>

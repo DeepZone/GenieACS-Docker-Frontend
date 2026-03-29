@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from ipaddress import ip_address
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 from flask import Flask, flash, jsonify, redirect, render_template, request, url_for
@@ -65,6 +65,8 @@ UDPST_STATUS_PARAMETER_NAMES = [
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Result",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.TestIntervalSecs",
 ]
+UDPST_CONTROL_START_PARAMETER = "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start"
+UDPST_CONTROL_STATE_PARAMETER = "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.State"
 
 UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
 UDPST_TEST_ROLE = os.getenv("UDPST_TEST_ROLE", "Receiver")
@@ -78,6 +80,9 @@ UDPST_RUN_CONTEXT_LOCK = Lock()
 UDPST_AJAX_JOBS: dict[str, dict[str, object]] = {}
 UDPST_AJAX_DEVICE_JOBS: dict[str, str] = {}
 UDPST_AJAX_LOCK = Lock()
+UDPST_LAST_ACS_REQUEST: dict[str, dict[str, object]] = {}
+UDPST_LAST_ACS_RESPONSE: dict[str, dict[str, object]] = {}
+UDPST_LAST_ACS_LOCK = Lock()
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
 
@@ -314,6 +319,8 @@ def device_detail(device_id: str):
         udpst_server_status=udpst_server_status,
         udpst_debug_trace=get_udpst_debug_trace(device_id),
         udpst_running=bool(is_running or run_status in active_run_statuses),
+        udpst_last_acs_request=get_last_acs_request(device_id),
+        udpst_last_acs_response=get_last_acs_response(device_id),
     )
 
 
@@ -378,6 +385,61 @@ def get_udpst_ajax_job_status(device_id: str, job_id: str):
     if not job or str(job.get("device_id")) != device_id:
         return jsonify({"ok": False, "error": "Job nicht gefunden."}), 404
     return jsonify({"ok": True, "job": job})
+
+
+@app.post("/api/devices/<device_id>/udpst/minimalstart")
+@login_required
+def udpst_minimal_start(device_id: str):
+    config = AppConfig.query.first()
+    if not config or not config.acs_api_url:
+        return jsonify({"ok": False, "error": "Keine ACS-API-URL konfiguriert."}), 400
+
+    acs_api_url = config.acs_api_url.rstrip("/")
+    clear_udpst_debug_trace(device_id)
+    append_udpst_debug_trace(device_id, "minimal", "Minimalstart aktiviert: nur Control.Start setzen und Control.State pollen.")
+    try:
+        queue_set_parameter_values_task(
+            acs_api_url,
+            device_id,
+            [(UDPST_CONTROL_START_PARAMETER, True, "xsd:boolean")],
+            connection_request=True,
+        )
+        poll_result = poll_udpst_control_state_only(acs_api_url, device_id, timeout_seconds=45, poll_interval_seconds=3)
+        latest_request = get_last_acs_request(device_id)
+        latest_response = get_last_acs_response(device_id)
+        control_state = str(poll_result.get("control_state") or "").strip()
+        is_running = control_state.lower() == UDPST_RUNNING_STATE
+        if is_running:
+            message = "Control.State wurde auf 'running' gesetzt. Der Test läuft."
+        else:
+            message = "Start-Trigger wurde an ACS gesendet, aber `Control.State` wechselte nicht auf `running`."
+        return jsonify(
+            {
+                "ok": True,
+                "message": message,
+                "control_state": control_state or "-",
+                "is_running": is_running,
+                "poll": poll_result,
+                "last_request": latest_request,
+                "last_response": latest_response,
+            }
+        )
+    except requests.RequestException as exc:
+        latest_request = get_last_acs_request(device_id)
+        latest_response = get_last_acs_response(device_id)
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "ACS-API Request fehlgeschlagen.",
+                    "exception_class": exc.__class__.__name__,
+                    "exception_text": str(exc),
+                    "last_request": latest_request,
+                    "last_response": latest_response,
+                }
+            ),
+            502,
+        )
 
 
 @app.post("/devices/<device_id>/udpst")
@@ -801,7 +863,8 @@ def refresh_identity_from_device(acs_api_url: str, device_id: str) -> dict | Non
     if not device_id:
         return None
 
-    task_url = f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks?timeout=10000&connection_request"
+    encoded_device_id, _ = encode_device_id_for_acs_url(device_id)
+    task_url = build_acs_task_url(acs_api_url, encoded_device_id, connection_request=True)
     task_payload = {"name": "getParameterValues", "parameterNames": IDENTITY_PARAMETER_NAMES}
 
     try:
@@ -1680,6 +1743,42 @@ def queue_connection_request_task(acs_api_url: str, device_id: str) -> None:
     )
 
 
+def encode_device_id_for_acs_url(device_id: str) -> tuple[str, dict[str, object]]:
+    raw_device_id = str(device_id or "")
+    decoded_device_id = unquote(raw_device_id)
+    input_looked_pre_encoded = decoded_device_id != raw_device_id and quote(decoded_device_id, safe="") == raw_device_id
+    normalized_device_id = decoded_device_id if input_looked_pre_encoded else raw_device_id
+    encoded_device_id = quote(normalized_device_id, safe="")
+    encoded_twice = quote(encoded_device_id, safe="")
+    return encoded_device_id, {
+        "raw_device_id": raw_device_id,
+        "normalized_device_id": normalized_device_id,
+        "encoded_device_id": encoded_device_id,
+        "encoded_twice": encoded_twice,
+        "input_looked_pre_encoded": input_looked_pre_encoded,
+    }
+
+
+def set_last_acs_request(device_id: str, request_data: dict[str, object]) -> None:
+    with UDPST_LAST_ACS_LOCK:
+        UDPST_LAST_ACS_REQUEST[device_id] = dict(request_data)
+
+
+def set_last_acs_response(device_id: str, response_data: dict[str, object]) -> None:
+    with UDPST_LAST_ACS_LOCK:
+        UDPST_LAST_ACS_RESPONSE[device_id] = dict(response_data)
+
+
+def get_last_acs_request(device_id: str) -> dict[str, object]:
+    with UDPST_LAST_ACS_LOCK:
+        return dict(UDPST_LAST_ACS_REQUEST.get(device_id, {}))
+
+
+def get_last_acs_response(device_id: str) -> dict[str, object]:
+    with UDPST_LAST_ACS_LOCK:
+        return dict(UDPST_LAST_ACS_RESPONSE.get(device_id, {}))
+
+
 def execute_acs_task(
     acs_api_url: str,
     device_id: str,
@@ -1688,24 +1787,81 @@ def execute_acs_task(
     operation_name: str,
     connection_request: bool,
 ) -> dict[str, object]:
-    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=connection_request)
+    encoded_device_id, encoding_meta = encode_device_id_for_acs_url(device_id)
+    task_url = build_acs_task_url(acs_api_url, encoded_device_id, connection_request=connection_request)
+    payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    purpose = f"{operation_name} (connection_request={'active' if connection_request else 'inactive'})"
+    append_udpst_debug_trace(device_id, "acs-meta", f"Request-Zweck: {purpose}")
+    append_udpst_debug_trace(
+        device_id,
+        "acs-meta",
+        (
+            f"Device-ID raw='{encoding_meta['raw_device_id']}' normalized='{encoding_meta['normalized_device_id']}' "
+            f"encoded_once='{encoding_meta['encoded_device_id']}' encoded_twice='{encoding_meta['encoded_twice']}' "
+            f"input_pre_encoded={encoding_meta['input_looked_pre_encoded']} used_single_encode=True"
+        ),
+    )
+    append_udpst_debug_trace(device_id, "acs-meta", f"Finale URL: {task_url}")
     append_udpst_debug_trace(
         device_id,
         "acs->request",
-        (
-            f"POST {task_url} operation={operation_name} "
-            f"payload={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
-        ),
+        f"method=POST url={task_url} payload={payload_text}",
     )
-    response = requests.post(task_url, json=payload, timeout=10)
-    response.raise_for_status()
+    set_last_acs_request(
+        device_id,
+        {
+            "purpose": purpose,
+            "url": task_url,
+            "method": "POST",
+            "payload": payload,
+            "connection_request": connection_request,
+            "device_id_encoding": encoding_meta,
+        },
+    )
+    try:
+        response = requests.post(task_url, json=payload, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        response_body = ""
+        status_code = None
+        if exc.response is not None:
+            status_code = exc.response.status_code
+            response_body = exc.response.text
+        append_udpst_debug_trace(
+            device_id,
+            "acs<-error",
+            (
+                f"exception_class={exc.__class__.__name__} exception_text={exc} "
+                f"http_status={status_code if status_code is not None else '-'} body={(response_body or '-').strip()}"
+            ),
+        )
+        set_last_acs_response(
+            device_id,
+            {
+                "http_status": status_code,
+                "response_body": response_body,
+                "exception_class": exc.__class__.__name__,
+                "exception_text": str(exc),
+            },
+        )
+        raise
+
     response_preview = response.text.strip().replace("\n", " ")
-    if len(response_preview) > 400:
-        response_preview = f"{response_preview[:400]}…"
+    if len(response_preview) > 1200:
+        response_preview = f"{response_preview[:1200]}…"
     append_udpst_debug_trace(
         device_id,
         "acs<-response",
-        f"HTTP {response.status_code} operation={operation_name} body={response_preview or '-'}",
+        f"http_status={response.status_code} body={response_preview or '-'}",
+    )
+    set_last_acs_response(
+        device_id,
+        {
+            "http_status": response.status_code,
+            "response_body": response.text,
+            "exception_class": "",
+            "exception_text": "",
+        },
     )
     try:
         parsed = response.json()
@@ -1718,9 +1874,9 @@ def execute_acs_task(
     return parsed if isinstance(parsed, dict) else {}
 
 
-def build_acs_task_url(acs_api_url: str, device_id: str, connection_request: bool = False) -> str:
+def build_acs_task_url(acs_api_url: str, encoded_device_id: str, connection_request: bool = False) -> str:
     suffix = "?timeout=10000&connection_request" if connection_request else "?timeout=10000"
-    return f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks{suffix}"
+    return f"{acs_api_url}/devices/{encoded_device_id}/tasks{suffix}"
 
 
 def determine_udpst_polling(device: dict | None) -> tuple[int, int, int]:
@@ -1734,6 +1890,56 @@ def determine_udpst_polling(device: dict | None) -> tuple[int, int, int]:
     timeout_seconds = max(30, test_interval_seconds + 30)
     poll_interval_seconds = 3
     return test_interval_seconds, timeout_seconds, poll_interval_seconds
+
+
+def poll_udpst_control_state_only(
+    acs_api_url: str,
+    device_id: str,
+    timeout_seconds: int = 45,
+    poll_interval_seconds: int = 3,
+) -> dict[str, object]:
+    deadline = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
+    poll_states: list[str] = []
+    append_udpst_debug_trace(
+        device_id,
+        "minimal-poll",
+        f"Polling nur auf {UDPST_CONTROL_STATE_PARAMETER} gestartet (timeout={timeout_seconds}s, interval={poll_interval_seconds}s).",
+    )
+    while datetime.now(UTC) < deadline:
+        queue_get_parameter_values_task(
+            acs_api_url,
+            device_id,
+            [UDPST_CONTROL_STATE_PARAMETER],
+            connection_request=True,
+        )
+        device = load_device_detail(acs_api_url, device_id)
+        control_state = (
+            str((device or {}).get("udpst", {}).get("control_state", "")).strip()
+            if isinstance(device, dict)
+            else ""
+        )
+        poll_states.append(control_state or "-")
+        append_udpst_debug_trace(
+            device_id,
+            "minimal-poll",
+            f"{UDPST_CONTROL_STATE_PARAMETER}={control_state or '-'}",
+        )
+        if control_state.lower() == UDPST_RUNNING_STATE:
+            return {
+                "running": True,
+                "control_state": control_state,
+                "poll_states": poll_states,
+                "poll_count": len(poll_states),
+            }
+        time.sleep(poll_interval_seconds)
+
+    final_state = poll_states[-1] if poll_states else ""
+    return {
+        "running": False,
+        "control_state": final_state,
+        "poll_states": poll_states,
+        "poll_count": len(poll_states),
+    }
 
 
 def poll_udpst_result(

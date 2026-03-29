@@ -1040,8 +1040,9 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
     ) or ""
     parsed_json_result = parse_udpst_json_result(raw_json_result)
     chart_points = extract_udpst_result_chart(parsed_json_result)
+    incremental_chart = extract_udpst_incremental_chart(parsed_json_result)
     summary = extract_udpst_summary(parsed_json_result)
-    debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points)
+    debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points, incremental_chart)
 
     config_model = AppConfig.query.first()
     monitor_target = resolve_udpst_monitor_target(config_model)
@@ -1098,6 +1099,7 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
         "result_json_pretty": json.dumps(parsed_json_result, ensure_ascii=False, indent=2) if parsed_json_result else "",
         "summary_rows": summary,
         "chart_points": chart_points,
+        "chart": incremental_chart,
         "debug_details": debug_details,
     }
 
@@ -1163,6 +1165,71 @@ def extract_udpst_result_chart(result_json: dict) -> list[dict[str, object]]:
     return points
 
 
+def extract_udpst_incremental_chart(result_json: dict) -> dict[str, object]:
+    empty_chart = {
+        "available": False,
+        "labels": [],
+        "ip_layer_capacity": [],
+        "reordered_ratio_percent": [],
+        "message": "Kein IncrementalResult im UDPST-Ergebnis gefunden.",
+    }
+    if not isinstance(result_json, dict):
+        return empty_chart
+
+    output = result_json.get("Output", {})
+    if not isinstance(output, dict):
+        return empty_chart
+
+    incremental = output.get("IncrementalResult")
+    if incremental is None:
+        return empty_chart
+
+    rows: list[dict[str, object]] = []
+    if isinstance(incremental, list):
+        rows = [row for row in incremental if isinstance(row, dict)]
+    elif isinstance(incremental, dict):
+        if any(key in incremental for key in ("Interval", "Seconds", "IPLayerCapacity", "ReorderedRatio")):
+            rows = [incremental]
+        else:
+            sorted_items = sorted(incremental.items(), key=lambda item: str(item[0]))
+            rows = [value for key, value in sorted_items if not str(key).startswith("_") and isinstance(value, dict)]
+
+    if not rows:
+        empty_chart["message"] = "IncrementalResult ist vorhanden, enthält aber keine verwertbaren Intervalldaten."
+        return empty_chart
+
+    labels: list[str] = []
+    ip_layer_capacity: list[float] = []
+    reordered_ratio_percent: list[float] = []
+    for index, row in enumerate(rows, start=1):
+        interval_value = row.get("Interval")
+        if interval_value in (None, ""):
+            interval_value = row.get("Seconds")
+        ip_value = to_decimal(row.get("IPLayerCapacity"))
+        reordered_ratio = to_decimal(row.get("ReorderedRatio"))
+        if interval_value in (None, "") or ip_value is None or reordered_ratio is None:
+            continue
+        labels.append(str(interval_value))
+        ip_layer_capacity.append(float(ip_value))
+        reordered_ratio_percent.append(float((reordered_ratio * Decimal(100)).quantize(Decimal("0.0001"))))
+
+    if not labels:
+        empty_chart["message"] = (
+            "IncrementalResult gefunden, aber keine vollständigen Messpunkte mit Interval/Seconds, "
+            "IPLayerCapacity und ReorderedRatio."
+        )
+        return empty_chart
+
+    return {
+        "available": True,
+        "labels": labels,
+        "ip_layer_capacity": ip_layer_capacity,
+        "reordered_ratio_percent": reordered_ratio_percent,
+        "message": "",
+        "points": len(labels),
+    }
+
+
 def iter_udpst_numeric_entries(node: object, path: str = "Result") -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     if isinstance(node, dict):
@@ -1196,7 +1263,9 @@ def iter_udpst_numeric_entries(node: object, path: str = "Result") -> list[dict[
     return entries
 
 
-def build_udpst_debug_details(raw_result: str, parsed_result: dict, chart_points: list[dict[str, object]]) -> list[dict[str, str]]:
+def build_udpst_debug_details(
+    raw_result: str, parsed_result: dict, chart_points: list[dict[str, object]], incremental_chart: dict[str, object]
+) -> list[dict[str, str]]:
     output = parsed_result.get("Output", {}) if isinstance(parsed_result, dict) else {}
     incremental = output.get("IncrementalResult") if isinstance(output, dict) else None
     incremental_kind = type(incremental).__name__ if incremental is not None else "missing"
@@ -1206,6 +1275,8 @@ def build_udpst_debug_details(raw_result: str, parsed_result: dict, chart_points
         {"label": "JSON parsebar", "value": "Ja" if bool(parsed_result) else "Nein"},
         {"label": "IncrementalResult Typ", "value": incremental_kind},
         {"label": "Diagramm-Punkte", "value": str(len(chart_points))},
+        {"label": "Incremental-Chart verfügbar", "value": "Ja" if bool(incremental_chart.get("available")) else "Nein"},
+        {"label": "Incremental-Messpunkte", "value": str(incremental_chart.get("points") or 0)},
         {"label": "Erster Punkt Quelle", "value": str(first_point.get("source_path") or "-")},
     ]
 

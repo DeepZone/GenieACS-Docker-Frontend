@@ -67,6 +67,11 @@ UDPST_STATUS_PARAMETER_NAMES = [
 ]
 UDPST_CONTROL_START_PARAMETER = "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start"
 UDPST_CONTROL_STATE_PARAMETER = "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.State"
+UDPST_MINIMAL_DEVICE_READ_FIELDS = [
+    "_id",
+    UDPST_CONTROL_START_PARAMETER,
+    UDPST_CONTROL_STATE_PARAMETER,
+]
 
 UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
 UDPST_TEST_ROLE = os.getenv("UDPST_TEST_ROLE", "Receiver")
@@ -402,13 +407,22 @@ def udpst_minimal_start(device_id: str):
 
     acs_api_url = config.acs_api_url.rstrip("/")
     clear_udpst_debug_trace(device_id)
-    append_udpst_debug_trace(device_id, "minimal", "Minimalstart aktiviert: nur Control.Start setzen und Control.State pollen.")
+    append_udpst_debug_trace(
+        device_id,
+        "minimal",
+        "Minimalstart aktiviert: set(Control.Start=true) -> get(Control.State) -> Device-Read (State aus Device-Dokument).",
+    )
     try:
-        queue_set_parameter_values_task(
+        set_task_response = queue_set_parameter_values_task(
             acs_api_url,
             device_id,
             [(UDPST_CONTROL_START_PARAMETER, True, "xsd:boolean")],
             connection_request=True,
+        )
+        append_udpst_debug_trace(
+            device_id,
+            "minimal",
+            f"setParameterValues-Task-Metadaten: {json.dumps(set_task_response, ensure_ascii=False, separators=(',', ':')) or '{}'}",
         )
         poll_result = poll_udpst_control_state_only(acs_api_url, device_id, timeout_seconds=45, poll_interval_seconds=3)
         latest_request = get_last_acs_request(device_id)
@@ -1704,12 +1718,12 @@ def queue_set_parameter_values_task(
     parameter_values: list[tuple[str, object, str]],
     *,
     connection_request: bool = True,
-) -> None:
+) -> dict[str, object]:
     payload = {
         "name": "setParameterValues",
         "parameterValues": [[name, value, value_type] for name, value, value_type in parameter_values],
     }
-    execute_acs_task(
+    return execute_acs_task(
         acs_api_url,
         device_id,
         payload,
@@ -1724,12 +1738,12 @@ def queue_get_parameter_values_task(
     parameter_names: list[str],
     *,
     connection_request: bool = True,
-) -> None:
+) -> dict[str, object]:
     payload = {
         "name": "getParameterValues",
         "parameterNames": parameter_names,
     }
-    execute_acs_task(
+    return execute_acs_task(
         acs_api_url,
         device_id,
         payload,
@@ -1747,6 +1761,36 @@ def queue_connection_request_task(acs_api_url: str, device_id: str) -> None:
         operation_name="connection_request",
         connection_request=False,
     )
+
+
+def read_udpst_control_state_from_device_document(acs_api_url: str, device_id: str) -> dict[str, str]:
+    projection = quote(",".join(UDPST_MINIMAL_DEVICE_READ_FIELDS))
+    query = quote(json.dumps({"_id": device_id}, separators=(",", ":")))
+    url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
+    append_udpst_debug_trace(device_id, "device-read", f"GET {url}")
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise ValueError("Unexpected ACS response")
+    device_doc = payload[0]
+    control_state = get_nested_acs_value(
+        device_doc,
+        ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Control", "State"],
+    ) or ""
+    control_start = get_nested_acs_value(
+        device_doc,
+        ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Control", "Start"],
+    ) or ""
+    append_udpst_debug_trace(
+        device_id,
+        "device-read",
+        f"Extrahierter Device-State: {UDPST_CONTROL_STATE_PARAMETER}={control_state or '-'} {UDPST_CONTROL_START_PARAMETER}={control_start or '-'}",
+    )
+    return {
+        "control_state": control_state,
+        "control_start": control_start,
+    }
 
 
 def prepare_device_id_for_genieacs_task_path(device_id: str) -> tuple[str, dict[str, object]]:
@@ -1908,26 +1952,32 @@ def poll_udpst_control_state_only(
     append_udpst_debug_trace(
         device_id,
         "minimal-poll",
-        f"Polling nur auf {UDPST_CONTROL_STATE_PARAMETER} gestartet (timeout={timeout_seconds}s, interval={poll_interval_seconds}s).",
+        (
+            f"Polling gestartet (timeout={timeout_seconds}s, interval={poll_interval_seconds}s): "
+            "getParameterValues liefert nur Task-Metadaten; echter State wird danach aus dem Device gelesen."
+        ),
     )
     while datetime.now(UTC) < deadline:
-        queue_get_parameter_values_task(
+        task_response = queue_get_parameter_values_task(
             acs_api_url,
             device_id,
             [UDPST_CONTROL_STATE_PARAMETER],
             connection_request=True,
         )
-        device = load_device_detail(acs_api_url, device_id)
-        control_state = (
-            str((device or {}).get("udpst", {}).get("control_state", "")).strip()
-            if isinstance(device, dict)
-            else ""
+        append_udpst_debug_trace(
+            device_id,
+            "minimal-poll",
+            f"getParameterValues-Task-Metadaten: {json.dumps(task_response, ensure_ascii=False, separators=(',', ':')) or '{}'}",
         )
+        if poll_interval_seconds > 0:
+            time.sleep(poll_interval_seconds)
+        device_read = read_udpst_control_state_from_device_document(acs_api_url, device_id)
+        control_state = str(device_read.get("control_state") or "").strip()
         poll_states.append(control_state or "-")
         append_udpst_debug_trace(
             device_id,
             "minimal-poll",
-            f"{UDPST_CONTROL_STATE_PARAMETER}={control_state or '-'}",
+            f"Aus Device-Dokument gelesen: {UDPST_CONTROL_STATE_PARAMETER}={control_state or '-'}",
         )
         if control_state.lower() == UDPST_RUNNING_STATE:
             return {
@@ -1936,7 +1986,6 @@ def poll_udpst_control_state_only(
                 "poll_states": poll_states,
                 "poll_count": len(poll_states),
             }
-        time.sleep(poll_interval_seconds)
 
     final_state = poll_states[-1] if poll_states else ""
     return {

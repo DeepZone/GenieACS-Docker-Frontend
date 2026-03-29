@@ -200,22 +200,121 @@
             <p class="text-muted">Noch keine Kommunikations-Logs vorhanden. Nach dem Start sind hier sofort die ACS-Tasks sichtbar.</p>
           {% endif %}
 
-          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (alle numerischen Werte aus Result.Result)</h3>
+          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (2-Achsen-Diagramm, alle numerischen Werte aus Result.Result)</h3>
           {% if device.udpst.chart_points %}
-            <div class="vstack gap-2 mb-3">
-              {% for point in device.udpst.chart_points %}
-                <div>
-                  <div class="d-flex justify-content-between">
-                    <span class="small">{{ point.label }} ({{ point.raw_key }})</span>
-                    <span class="small fw-semibold">{{ point.raw_value }}</span>
-                  </div>
-                  <div class="small text-muted mb-1">Quelle: {{ point.source_path }}</div>
-                  <div class="progress" role="progressbar" aria-valuenow="{{ point.percent }}" aria-valuemin="0" aria-valuemax="100">
-                    <div class="progress-bar" style="width: {{ point.percent }}%"></div>
-                  </div>
-                </div>
-              {% endfor %}
+            <div class="mb-3" style="height: 22rem;">
+              <canvas id="udpst-two-axis-chart" aria-label="UDPST Messwerte als Zwei-Achsen-Diagramm" role="img"></canvas>
             </div>
+            <div class="table-responsive mb-3">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Messwert</th>
+                    <th>Rohwert</th>
+                    <th>Anteil (normalisiert)</th>
+                    <th>Quelle</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for point in device.udpst.chart_points %}
+                    <tr>
+                      <td>{{ point.label }} ({{ point.raw_key }})</td>
+                      <td>{{ point.raw_value }}</td>
+                      <td>{{ point.percent }}%</td>
+                      <td>{{ point.source_path }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+            <script>
+              (function () {
+                const points = {{ device.udpst.chart_points | tojson }};
+                const labels = points.map((point) => point.label);
+                const rawValues = points.map((point) => Number(point.value || 0));
+                const normalizedValues = points.map((point) => Number(point.percent || 0));
+                const ctx = document.getElementById('udpst-two-axis-chart');
+
+                if (!ctx || typeof Chart === 'undefined') {
+                  return;
+                }
+
+                new Chart(ctx, {
+                  type: 'bar',
+                  data: {
+                    labels,
+                    datasets: [
+                      {
+                        type: 'bar',
+                        label: 'Rohwert',
+                        data: rawValues,
+                        yAxisID: 'yRaw',
+                        backgroundColor: 'rgba(13, 110, 253, 0.35)',
+                        borderColor: 'rgba(13, 110, 253, 1)',
+                        borderWidth: 1,
+                      },
+                      {
+                        type: 'line',
+                        label: 'Anteil in % (normalisiert)',
+                        data: normalizedValues,
+                        yAxisID: 'yPercent',
+                        borderColor: 'rgba(220, 53, 69, 1)',
+                        backgroundColor: 'rgba(220, 53, 69, 0.2)',
+                        tension: 0.25,
+                        pointRadius: 3,
+                      }
+                    ]
+                  },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                      mode: 'index',
+                      intersect: false,
+                    },
+                    plugins: {
+                      legend: {
+                        position: 'top',
+                      },
+                      tooltip: {
+                        callbacks: {
+                          label: function(context) {
+                            if (context.dataset.yAxisID === 'yPercent') {
+                              return context.dataset.label + ': ' + context.formattedValue + '%';
+                            }
+                            return context.dataset.label + ': ' + context.formattedValue;
+                          }
+                        }
+                      }
+                    },
+                    scales: {
+                      yRaw: {
+                        type: 'linear',
+                        position: 'left',
+                        title: {
+                          display: true,
+                          text: 'Rohwert'
+                        }
+                      },
+                      yPercent: {
+                        type: 'linear',
+                        position: 'right',
+                        min: 0,
+                        max: 100,
+                        grid: {
+                          drawOnChartArea: false
+                        },
+                        title: {
+                          display: true,
+                          text: 'Anteil (%)'
+                        }
+                      }
+                    }
+                  }
+                });
+              })();
+            </script>
           {% else %}
             <p class="text-muted">Noch keine numerischen Werte in Result.Result verfügbar.</p>
           {% endif %}

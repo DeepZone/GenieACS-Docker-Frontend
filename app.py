@@ -65,6 +65,7 @@ UDPST_STATUS_PARAMETER_NAMES = [
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Success",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Message",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Result",
+    "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.TestIntervalSecs",
 ]
 
 UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
@@ -350,12 +351,19 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
             )
+            current_device = load_device_detail(acs_api_url, device_id)
+            test_interval_seconds, timeout_seconds, poll_interval_seconds = determine_udpst_polling(current_device)
             append_udpst_debug_trace(
                 device_id,
                 "state",
-                f"Control.Start gesetzt, Polling bis {90}s mit Intervall {3}s",
+                f"Control.Start gesetzt, TestIntervalSecs={test_interval_seconds}s, Polling bis {timeout_seconds}s mit Intervall {poll_interval_seconds}s",
             )
-            if poll_udpst_result(acs_api_url, device_id):
+            if poll_udpst_result(
+                acs_api_url,
+                device_id,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            ):
                 flash("UDPST-Test wurde gestartet und Ergebnis aktiv vom Gerät abgefragt.", "success")
             else:
                 flash(
@@ -1031,7 +1039,7 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
         device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Result", "Result"]
     ) or ""
     parsed_json_result = parse_udpst_json_result(raw_json_result)
-    chart_points = extract_udpst_incremental_chart(parsed_json_result)
+    chart_points = extract_udpst_result_chart(parsed_json_result)
     summary = extract_udpst_summary(parsed_json_result)
     debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points)
 
@@ -1070,6 +1078,10 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
             device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "Role"]
         )
         or UDPST_TEST_ROLE,
+        "test_interval_secs": get_nested_acs_value(
+            device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "TestIntervalSecs"]
+        )
+        or "-",
         "control_state": get_nested_acs_value(
             device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Control", "State"]
         )
@@ -1121,29 +1133,23 @@ def extract_udpst_summary(result_json: dict) -> list[dict[str, str]]:
     return rows
 
 
-def extract_udpst_incremental_chart(result_json: dict) -> list[dict[str, object]]:
+def extract_udpst_result_chart(result_json: dict) -> list[dict[str, object]]:
     if not isinstance(result_json, dict):
         return []
-    output = result_json.get("Output", {})
-    if not isinstance(output, dict):
-        return []
-    incremental_result = output.get("IncrementalResult")
-    if incremental_result is None:
-        return []
 
-    candidates = ("IPLR", "IPLayerRate", "LayerRate", "Rate", "DataRate", "OfferedRate", "Bps", "Bitrate", "Speed")
     points: list[dict[str, object]] = []
     max_value = Decimal(0)
-    extracted_entries = iter_udpst_rate_entries(incremental_result, candidates)
+    extracted_entries = iter_udpst_numeric_entries(result_json)
+
     for index, entry in enumerate(extracted_entries, start=1):
-        rate_value = entry.get("numeric_value")
-        if not isinstance(rate_value, Decimal):
+        numeric_value = entry.get("numeric_value")
+        if not isinstance(numeric_value, Decimal):
             continue
-        max_value = max(max_value, rate_value)
+        max_value = max(max_value, numeric_value)
         points.append(
             {
-                "label": f"Intervall {index}",
-                "value": float(rate_value),
+                "label": f"Punkt {index}",
+                "value": float(numeric_value),
                 "raw_key": str(entry.get("key") or "-"),
                 "raw_value": str(entry.get("raw_value") or "-"),
                 "percent": 0.0,
@@ -1157,26 +1163,36 @@ def extract_udpst_incremental_chart(result_json: dict) -> list[dict[str, object]
     return points
 
 
-def iter_udpst_rate_entries(node: object, candidates: tuple[str, ...], path: str = "Output.IncrementalResult") -> list[dict[str, object]]:
+def iter_udpst_numeric_entries(node: object, path: str = "Result") -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     if isinstance(node, dict):
-        matched_key = next((candidate for candidate in candidates if candidate in node and node[candidate] not in (None, "")), None)
-        if matched_key is not None:
-            numeric_value = to_decimal(node.get(matched_key))
+        for key, value in node.items():
+            current_path = f"{path}.{key}"
+            numeric_value = to_decimal(value)
             if numeric_value is not None:
                 entries.append(
                     {
-                        "key": matched_key,
-                        "raw_value": node.get(matched_key),
+                        "key": key,
+                        "raw_value": value,
                         "numeric_value": numeric_value,
-                        "path": path,
+                        "path": current_path,
                     }
                 )
-        for key, value in node.items():
-            entries.extend(iter_udpst_rate_entries(value, candidates, f"{path}.{key}"))
+            entries.extend(iter_udpst_numeric_entries(value, current_path))
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            entries.extend(iter_udpst_rate_entries(value, candidates, f"{path}[{index}]"))
+            current_path = f"{path}[{index}]"
+            numeric_value = to_decimal(value)
+            if numeric_value is not None:
+                entries.append(
+                    {
+                        "key": f"[{index}]",
+                        "raw_value": value,
+                        "numeric_value": numeric_value,
+                        "path": current_path,
+                    }
+                )
+            entries.extend(iter_udpst_numeric_entries(value, current_path))
     return entries
 
 
@@ -1224,6 +1240,19 @@ def queue_get_parameter_values_task(
     response = requests.post(task_url, json=payload, timeout=10)
     response.raise_for_status()
     append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} getParameterValues")
+
+
+def determine_udpst_polling(device: dict | None) -> tuple[int, int, int]:
+    configured_interval = to_decimal(
+        get_nested_acs_value(
+            device or {},
+            ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "TestIntervalSecs"],
+        )
+    )
+    test_interval_seconds = int(configured_interval) if configured_interval is not None and configured_interval > 0 else 60
+    timeout_seconds = max(30, test_interval_seconds + 30)
+    poll_interval_seconds = 3
+    return test_interval_seconds, timeout_seconds, poll_interval_seconds
 
 
 def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 90, poll_interval_seconds: int = 3) -> bool:

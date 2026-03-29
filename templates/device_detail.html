@@ -152,10 +152,14 @@
                     {% if run.status == 'pending' %}
                       Start angefordert: Warte auf ACS-Trigger.
                     {% elif run.status == 'trigger_sent' %}
-                      Trigger an ACS gesendet. Warte auf tatsächlichen Testlauf auf dem Gerät.
+                      Start-Trigger gesendet. Warte auf Control.State=running.
                     {% else %}
-                      Neuer Testlauf auf dem Gerät erkannt. Warte auf frisches Resultat.
+                      Test läuft wirklich (Control.State=running). Warte auf Abschluss und frisches Resultat.
                     {% endif %}
+                  </div>
+                {% elif run.status == 'not_started_no_running' %}
+                  <div class="alert alert-warning py-2 small mb-3">
+                    {{ run.stale_warning or "Der Start-Trigger wurde gesendet, aber Control.State wechselte nicht auf running. Der Test wurde daher nicht gestartet." }}
                   </div>
                 {% elif run.stale_detected or run.stale_result %}
                   <div class="alert alert-warning py-2 small mb-3">

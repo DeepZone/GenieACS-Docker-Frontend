@@ -12,27 +12,32 @@
             <input name="acs_api_url" class="form-control" value="{{ config.acs_api_url }}" required />
           </div>
           <div>
-            <label class="form-label">UDPST-Server (Hostname oder IP)</label>
-            <input
-              name="udpst_server_url"
-              class="form-control"
-              value="{{ config.udpst_server_url }}"
-              placeholder="speedtest.example.com"
-              required
-            />
+            <label class="form-label">UDPST-Server</label>
+            <div class="row g-2 align-items-end">
+              <div class="col-md-8">
+                <label class="form-label small text-muted mb-1">Host (Hostname oder IP)</label>
+                <input
+                  name="udpst_server_url"
+                  class="form-control"
+                  value="{{ config.udpst_server_url }}"
+                  placeholder="speedtest.example.com"
+                  required
+                />
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small text-muted mb-1">Port</label>
+                <input
+                  name="udpst_server_port"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  class="form-control"
+                  value="{{ config.udpst_server_port }}"
+                  required
+                />
+              </div>
+            </div>
             <div class="form-text">Erlaubt sind Hostname oder IP-Adresse; optional auch mit Schema (z. B. https://).</div>
-          </div>
-          <div>
-            <label class="form-label">UDPST-Port</label>
-            <input
-              name="udpst_server_port"
-              type="number"
-              min="1"
-              max="65535"
-              class="form-control"
-              value="{{ config.udpst_server_port }}"
-              required
-            />
           </div>
           <button class="btn btn-primary" type="submit">Speichern</button>
         </form>

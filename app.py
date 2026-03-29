@@ -1380,9 +1380,12 @@ def clear_udpst_debug_trace(device_id: str) -> None:
         UDPST_DEBUG_TRACES[device_id] = []
 
 
-def check_udpst_server_running(host: str, port: int) -> bool:
-    addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    for family, socktype, proto, _, sockaddr in addresses:
+def resolve_udpst_server_addresses(host: str, port: int) -> list[tuple]:
+    return socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+
+
+def check_udpst_server_running(addresses: list[tuple]) -> bool:
+    for _, _, _, _, sockaddr in addresses:
         try:
             with socket.create_connection(sockaddr, UDPST_HEALTHCHECK_TIMEOUT_SECONDS):
                 return True
@@ -1407,15 +1410,21 @@ def get_udpst_server_status(config: AppConfig | None) -> dict[str, object]:
         return {"is_running": False, "host": "-", "port": "-", "error": "Nicht konfiguriert."}
 
     try:
-        healthy = check_udpst_server_running(host, int(port))
+        addresses = resolve_udpst_server_addresses(host, int(port))
     except OSError:
-        healthy = False
+        return {
+            "is_running": False,
+            "host": host,
+            "port": port,
+            "error": "Host nicht auflösbar.",
+        }
 
+    tcp_reachable = check_udpst_server_running(addresses)
     return {
-        "is_running": healthy,
+        "is_running": True,
         "host": host,
         "port": port,
-        "error": None if healthy else "Nicht erreichbar.",
+        "error": None if tcp_reachable else "Host erreichbar, Portprüfung ohne TCP-Antwort.",
     }
 
 

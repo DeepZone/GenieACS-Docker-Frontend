@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+{% block title %}Mein Konto{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h1 class="h4 mb-3">Mein Konto</h1>
+        <form method="post" class="vstack gap-3">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Vorname</label>
+              <input name="first_name" class="form-control" value="{{ current_user.first_name }}" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Nachname</label>
+              <input name="last_name" class="form-control" value="{{ current_user.last_name }}" />
+            </div>
+          </div>
+
+          <div>
+            <label class="form-label">Benutzername</label>
+            <input class="form-control" value="{{ current_user.username }}" disabled />
+            <div class="form-text">Der Benutzername ist nicht änderbar und kann nur durch einen Admin verwaltet werden.</div>
+          </div>
+
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" value="1" id="debugEnabled" name="debug_enabled" {% if current_user.debug_enabled %}checked{% endif %} />
+            <label class="form-check-label" for="debugEnabled">Debug-Ansichten in der Geräteansicht anzeigen</label>
+          </div>
+
+          <hr class="my-1" />
+          <h2 class="h6 mb-0">Passwort ändern (optional)</h2>
+
+          <div>
+            <label class="form-label">Aktuelles Passwort</label>
+            <input name="current_password" type="password" class="form-control" autocomplete="current-password" />
+          </div>
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Neues Passwort</label>
+              <input name="new_password" type="password" class="form-control" autocomplete="new-password" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Neues Passwort bestätigen</label>
+              <input name="new_password_confirm" type="password" class="form-control" autocomplete="new-password" />
+            </div>
+          </div>
+
+          <button class="btn btn-primary" type="submit">Speichern</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

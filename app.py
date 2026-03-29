@@ -117,8 +117,11 @@ def bytes_to_human(value: int | None) -> str:
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(120), unique=True, nullable=False)
+    first_name = db.Column(db.String(120), nullable=False, default="")
+    last_name = db.Column(db.String(120), nullable=False, default="")
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(40), nullable=False, default="viewer")
+    debug_enabled = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(UTC))
 
     def set_password(self, raw_password: str) -> None:
@@ -175,13 +178,15 @@ def initial_setup():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
         acs_api_url = request.form.get("acs_api_url", "").strip()
 
         if not username or not password or not acs_api_url:
             flash("Bitte alle Felder ausfüllen.", "danger")
             return render_template("setup.html")
 
-        admin = User(username=username, role="admin")
+        admin = User(username=username, first_name=first_name, last_name=last_name, role="admin", debug_enabled=True)
         admin.set_password(password)
 
         config = AppConfig(
@@ -321,6 +326,7 @@ def device_detail(device_id: str):
         udpst_running=bool(is_running or run_status in active_run_statuses),
         udpst_last_acs_request=get_last_acs_request(device_id),
         udpst_last_acs_response=get_last_acs_response(device_id),
+        show_debug=current_user.debug_enabled,
     )
 
 
@@ -2238,6 +2244,19 @@ def admin_required():
     return True
 
 
+def ensure_user_columns() -> None:
+    table_info = db.session.execute(text("PRAGMA table_info(user)")).fetchall()
+    existing_columns = {row[1] for row in table_info}
+
+    if "first_name" not in existing_columns:
+        db.session.execute(text("ALTER TABLE user ADD COLUMN first_name VARCHAR(120) NOT NULL DEFAULT ''"))
+    if "last_name" not in existing_columns:
+        db.session.execute(text("ALTER TABLE user ADD COLUMN last_name VARCHAR(120) NOT NULL DEFAULT ''"))
+    if "debug_enabled" not in existing_columns:
+        db.session.execute(text("ALTER TABLE user ADD COLUMN debug_enabled BOOLEAN NOT NULL DEFAULT 0"))
+    db.session.commit()
+
+
 def ensure_app_config_columns() -> None:
     table_info = db.session.execute(text("PRAGMA table_info(app_config)")).fetchall()
     existing_columns = {row[1] for row in table_info}
@@ -2316,7 +2335,10 @@ def users():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
         role = request.form.get("role", "viewer")
+        debug_enabled = bool(request.form.get("debug_enabled"))
 
         if role not in {"admin", "editor", "viewer"}:
             flash("Ungültige Rolle.", "danger")
@@ -2330,7 +2352,7 @@ def users():
             flash("Benutzername existiert bereits.", "danger")
             return redirect(url_for("users"))
 
-        user = User(username=username, role=role)
+        user = User(username=username, first_name=first_name, last_name=last_name, role=role, debug_enabled=debug_enabled)
         user.set_password(password)
         db.session.add(user)
         db.session.commit()
@@ -2339,6 +2361,40 @@ def users():
 
     all_users = User.query.order_by(User.username.asc()).all()
     return render_template("users.html", users=all_users)
+
+
+@app.route("/account", methods=["GET", "POST"])
+@login_required
+def account_settings():
+    if request.method == "POST":
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
+        debug_enabled = bool(request.form.get("debug_enabled"))
+        current_password = request.form.get("current_password", "")
+        new_password = request.form.get("new_password", "")
+        new_password_confirm = request.form.get("new_password_confirm", "")
+
+        current_user.first_name = first_name
+        current_user.last_name = last_name
+        current_user.debug_enabled = debug_enabled
+
+        if new_password or new_password_confirm:
+            if not current_user.check_password(current_password):
+                flash("Aktuelles Passwort ist falsch.", "danger")
+                return redirect(url_for("account_settings"))
+            if len(new_password) < 8:
+                flash("Neues Passwort muss mindestens 8 Zeichen haben.", "danger")
+                return redirect(url_for("account_settings"))
+            if new_password != new_password_confirm:
+                flash("Neues Passwort und Bestätigung stimmen nicht überein.", "danger")
+                return redirect(url_for("account_settings"))
+            current_user.set_password(new_password)
+
+        db.session.commit()
+        flash("Kontodaten gespeichert.", "success")
+        return redirect(url_for("account_settings"))
+
+    return render_template("account.html")
 
 
 @app.post("/users/<int:user_id>/delete")
@@ -2364,6 +2420,7 @@ def delete_user(user_id: int):
 
 with app.app_context():
     db.create_all()
+    ensure_user_columns()
     ensure_app_config_columns()
 
 

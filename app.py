@@ -54,13 +54,10 @@ DEVICE_DETAIL_PROJECTION_FIELDS = [
     "InternetGatewayDevice.DeviceInfo.ModelName",
     "InternetGatewayDevice.WANDevice",
     "InternetGatewayDevice.LANDevice",
-    "InternetGatewayDevice.X_AVM-DE_SpeedtestServer",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity",
 ]
 
 UDPST_STATUS_PARAMETER_NAMES = [
-    "InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.State",
-    "InternetGatewayDevice.X_AVM-DE_SpeedtestServer.UDP.Result",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.State",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Success",
     "InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Message",
@@ -385,17 +382,22 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Host", host, "xsd:string"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Port", port, "xsd:unsignedInt"),
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Config.Role", role, "xsd:string"),
-                ],
-            )
-            queue_set_parameter_values_task(
-                acs_api_url,
-                device_id,
-                [
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
             )
+            append_udpst_debug_trace(
+                device_id,
+                "state",
+                "Control.Start=true wurde per setParameterValues an ACS gesendet (kombiniert mit Config.*).",
+            )
+            queue_connection_request_task(acs_api_url, device_id)
+            append_udpst_debug_trace(
+                device_id,
+                "state",
+                "Zusätzlicher connection_request Task wurde angelegt, damit das CPE den Start zeitnah ausführt.",
+            )
             update_udpst_run_context(device_id, status="trigger_sent", trigger_sent=True)
-            append_udpst_debug_trace(device_id, "state", "ACS-Tasks für Config.* und Control.Start wurden abgeschickt")
+            append_udpst_debug_trace(device_id, "state", "ACS-Task für Config.* + Control.Start wurde abgeschickt")
             current_device = load_device_detail(acs_api_url, device_id)
             if current_device and isinstance(current_device.get("udpst"), dict):
                 udpst_snapshot = current_device["udpst"]
@@ -407,8 +409,9 @@ def device_udpst_action(device_id: str):
                         f"IPLayerCapacity.Config.Host={udpst_snapshot.get('test_host') or '-'} "
                         f"Port={udpst_snapshot.get('test_port') or '-'} "
                         f"Role={udpst_snapshot.get('test_role') or '-'} "
-                        f"SpeedtestServer.UDP.State={udpst_snapshot.get('server_state') or '-'} "
-                        f"SpeedtestServer.UDP.Result={udpst_snapshot.get('server_result_text') or '-'}"
+                        f"Control.State={udpst_snapshot.get('control_state') or '-'} "
+                        f"Result.Success={udpst_snapshot.get('result_success') or '-'} "
+                        f"Result.Message={udpst_snapshot.get('result_message') or '-'}"
                     ),
                 )
             test_interval_seconds, timeout_seconds, poll_interval_seconds = determine_udpst_polling(current_device)
@@ -1134,24 +1137,6 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
     monitor_target = resolve_udpst_monitor_target(config_model)
 
     return {
-        "server_state": get_nested_acs_value(
-            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "State"]
-        )
-        or "-",
-        "server_port": get_nested_acs_value(device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "Port"])
-        or "-",
-        "server_port_bidirect": get_nested_acs_value(
-            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "PortBidirect"]
-        )
-        or "-",
-        "server_wan_access": get_nested_acs_value(
-            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "WANAccess"]
-        )
-        or "-",
-        "server_result_text": get_nested_acs_value(
-            device, ["InternetGatewayDevice", "X_AVM-DE_SpeedtestServer", "UDP", "Result"]
-        )
-        or "-",
         "test_host": get_nested_acs_value(
             device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Config", "Host"]
         )
@@ -1396,7 +1381,7 @@ def queue_set_parameter_values_task(
     device_id: str,
     parameter_values: list[tuple[str, object, str]],
 ) -> None:
-    task_url = f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks?timeout=10000&connection_request"
+    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=True)
     payload = {
         "name": "setParameterValues",
         "parameterValues": [[name, value, value_type] for name, value, value_type in parameter_values],
@@ -1412,7 +1397,7 @@ def queue_get_parameter_values_task(
     device_id: str,
     parameter_names: list[str],
 ) -> None:
-    task_url = f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks?timeout=10000&connection_request"
+    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=True)
     payload = {
         "name": "getParameterValues",
         "parameterNames": parameter_names,
@@ -1421,6 +1406,20 @@ def queue_get_parameter_values_task(
     response = requests.post(task_url, json=payload, timeout=10)
     response.raise_for_status()
     append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} getParameterValues")
+
+
+def queue_connection_request_task(acs_api_url: str, device_id: str) -> None:
+    task_url = build_acs_task_url(acs_api_url, device_id, connection_request=False)
+    payload = {"name": "connection_request"}
+    append_udpst_debug_trace(device_id, "acs->task", f"connection_request: {json.dumps(payload, ensure_ascii=False)}")
+    response = requests.post(task_url, json=payload, timeout=10)
+    response.raise_for_status()
+    append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} connection_request")
+
+
+def build_acs_task_url(acs_api_url: str, device_id: str, connection_request: bool = False) -> str:
+    suffix = "?timeout=10000&connection_request" if connection_request else "?timeout=10000"
+    return f"{acs_api_url}/devices/{quote(device_id, safe='')}/tasks{suffix}"
 
 
 def determine_udpst_polling(device: dict | None) -> tuple[int, int, int]:
@@ -1455,6 +1454,9 @@ def poll_udpst_result(
     append_udpst_debug_trace(device_id, "poll", f"Polling gestartet (timeout={timeout_seconds}s, interval={poll_interval_seconds}s)")
     if start_time:
         append_udpst_debug_trace(device_id, "poll", f"Vergleich gegen Startzeitpunkt (UTC): {start_time.isoformat()}")
+    previous_control_state = ""
+    first_state_change_logged = False
+    fresh_time_logged = False
     while datetime.now(UTC) < deadline:
         queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
         device = load_device_detail(acs_api_url, device_id)
@@ -1475,6 +1477,14 @@ def poll_udpst_result(
         if control_state in UDPST_RUNNING_STATES:
             state["device_run_detected"] = True
             update_udpst_run_context(device_id, status="device_run_detected", device_run_detected=True)
+        if control_state != previous_control_state and not first_state_change_logged:
+            append_udpst_debug_trace(
+                device_id,
+                "poll",
+                f"Control.State Wechsel erkannt: '{previous_control_state or '-'}' -> '{control_state or '-'}'",
+            )
+            first_state_change_logged = True
+        previous_control_state = control_state
         append_udpst_debug_trace(
             device_id,
             "poll-snapshot",
@@ -1496,6 +1506,13 @@ def poll_udpst_result(
                 stale_warning="Es wurde kein neuer Testlauf erkannt. Das gelesene Ergebnis stammt offenbar von einem früheren Lauf.",
             )
             append_udpst_debug_trace(device_id, "poll", "Ergebnis vorhanden, aber als stale erkannt")
+        if has_fresh_result and not fresh_time_logged:
+            append_udpst_debug_trace(
+                device_id,
+                "poll",
+                f"Frisches Ergebnis mit BOMTime={bom_time_iso} EOMTime={eom_time_iso} erkannt",
+            )
+            fresh_time_logged = True
         if control_state and control_state not in UDPST_RUNNING_STATES and has_fresh_result:
             state["completed_with_fresh_result"] = True
             update_udpst_run_context(

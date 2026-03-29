@@ -319,20 +319,42 @@ def device_udpst_action(device_id: str):
 
     action = request.form.get("action", "").strip()
     acs_api_url = config.acs_api_url.rstrip("/")
+    append_udpst_debug_trace(
+        device_id,
+        "request",
+        f"POST /devices/{device_id}/udpst empfangen, action='{action or '-'}'",
+    )
 
     try:
         if action == "run_udpst_test":
             clear_udpst_debug_trace(device_id)
+            append_udpst_debug_trace(
+                device_id,
+                "request",
+                f"POST /devices/{device_id}/udpst empfangen, action='run_udpst_test'",
+            )
             append_udpst_debug_trace(device_id, "action", "UDPST-Test gestartet (UI)")
             monitor_target = resolve_udpst_monitor_target(config)
             host = monitor_target.get("host", "")
             port = monitor_target.get("port")
             role = UDPST_TEST_ROLE.strip()
+            append_udpst_debug_trace(
+                device_id,
+                "config",
+                f"Verwende Host={host or '-'} Port={port if port is not None else '-'} Role={role or '-'}",
+            )
 
             if not host or port is None:
-                flash("UDPST-Serveradresse ist nicht vollständig konfiguriert.", "warning")
+                flash(
+                    "UDPST-Start fehlgeschlagen: UDPST-Serveradresse ist nicht vollständig konfiguriert (Host/Port).",
+                    "warning",
+                )
+                append_udpst_debug_trace(device_id, "validation", "Abbruch: Host oder Port fehlt")
                 return redirect(url_for("device_detail", device_id=device_id))
             if role not in {"Receiver", "Sender"}:
+                append_udpst_debug_trace(
+                    device_id, "validation", f"Ungültige Role '{role}' erkannt, fallback auf Receiver"
+                )
                 role = "Receiver"
 
             queue_set_parameter_values_task(
@@ -351,6 +373,7 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
             )
+            append_udpst_debug_trace(device_id, "state", "ACS-Tasks für Config.* und Control.Start wurden abgeschickt")
             current_device = load_device_detail(acs_api_url, device_id)
             test_interval_seconds, timeout_seconds, poll_interval_seconds = determine_udpst_polling(current_device)
             append_udpst_debug_trace(
@@ -371,6 +394,7 @@ def device_udpst_action(device_id: str):
                     "warning",
                 )
         elif action == "abort_udpst_test":
+            append_udpst_debug_trace(device_id, "action", "UDPST-Testabbruch angefordert (UI)")
             queue_set_parameter_values_task(
                 acs_api_url,
                 device_id,
@@ -392,9 +416,16 @@ def device_udpst_action(device_id: str):
                     "warning",
                 )
         else:
+            append_udpst_debug_trace(
+                device_id, "validation", f"Unbekannte Aktion empfangen: '{action or '-'}'"
+            )
             flash("Unbekannte UDPST-Aktion.", "warning")
     except requests.RequestException:
+        append_udpst_debug_trace(device_id, "error", "ACS-API RequestException während UDPST-Aktion")
         flash("ACS-API ist derzeit nicht erreichbar.", "danger")
+    except Exception as exc:
+        append_udpst_debug_trace(device_id, "error", f"Unerwarteter Fehler: {exc}")
+        flash(f"UDPST-Aktion fehlgeschlagen: {exc}", "danger")
 
     return redirect(url_for("device_detail", device_id=device_id))
 

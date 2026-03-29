@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import time
+from threading import Lock
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -69,6 +70,10 @@ UDPST_STATUS_PARAMETER_NAMES = [
 UDPST_TEST_PORT = int(os.getenv("UDPST_TEST_PORT", "25000"))
 UDPST_TEST_ROLE = os.getenv("UDPST_TEST_ROLE", "Receiver")
 UDPST_HEALTHCHECK_TIMEOUT_SECONDS = float(os.getenv("UDPST_HEALTHCHECK_TIMEOUT_SECONDS", "1.5"))
+UDPST_DEBUG_MAX_ENTRIES = int(os.getenv("UDPST_DEBUG_MAX_ENTRIES", "120"))
+UDPST_RUNNING_STATES = {"Requested", "Running", "InProgress", "Active", "Started"}
+UDPST_DEBUG_TRACES: dict[str, list[dict[str, str]]] = {}
+UDPST_DEBUG_LOCK = Lock()
 
 IDENTITY_FIELDS = ("manufacturer", "product_class", "serial_number", "model")
 
@@ -298,6 +303,8 @@ def device_detail(device_id: str):
         detail_error=detail_error,
         online_window_minutes=ONLINE_WINDOW_MINUTES,
         udpst_server_status=udpst_server_status,
+        udpst_debug_trace=get_udpst_debug_trace(device_id),
+        udpst_running=bool(device and str(device.get("udpst", {}).get("control_state", "")).strip() in UDPST_RUNNING_STATES),
     )
 
 
@@ -314,6 +321,8 @@ def device_udpst_action(device_id: str):
 
     try:
         if action == "run_udpst_test":
+            clear_udpst_debug_trace(device_id)
+            append_udpst_debug_trace(device_id, "action", "UDPST-Test gestartet (UI)")
             monitor_target = resolve_udpst_monitor_target(config)
             host = monitor_target.get("host", "")
             port = monitor_target.get("port")
@@ -341,6 +350,11 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Start", True, "xsd:boolean"),
                 ],
             )
+            append_udpst_debug_trace(
+                device_id,
+                "state",
+                f"Control.Start gesetzt, Polling bis {90}s mit Intervall {3}s",
+            )
             if poll_udpst_result(acs_api_url, device_id):
                 flash("UDPST-Test wurde gestartet und Ergebnis aktiv vom Gerät abgefragt.", "success")
             else:
@@ -356,8 +370,10 @@ def device_udpst_action(device_id: str):
                     ("InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Control.Abort", True, "xsd:boolean"),
                 ],
             )
+            append_udpst_debug_trace(device_id, "action", "UDPST-Testabbruch ausgelöst")
             flash("UDPST-Testabbruch wurde ausgelöst.", "info")
         elif action == "debug_udpst_refresh":
+            append_udpst_debug_trace(device_id, "action", "Debug-Refresh manuell ausgelöst")
             queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
             refreshed = poll_udpst_result(acs_api_url, device_id, timeout_seconds=25, poll_interval_seconds=2)
             if refreshed:
@@ -1188,8 +1204,10 @@ def queue_set_parameter_values_task(
         "name": "setParameterValues",
         "parameterValues": [[name, value, value_type] for name, value, value_type in parameter_values],
     }
+    append_udpst_debug_trace(device_id, "acs->task", f"setParameterValues: {json.dumps(payload, ensure_ascii=False)}")
     response = requests.post(task_url, json=payload, timeout=10)
     response.raise_for_status()
+    append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} setParameterValues")
 
 
 def queue_get_parameter_values_task(
@@ -1202,30 +1220,64 @@ def queue_get_parameter_values_task(
         "name": "getParameterValues",
         "parameterNames": parameter_names,
     }
+    append_udpst_debug_trace(device_id, "acs->task", f"getParameterValues: {json.dumps(payload, ensure_ascii=False)}")
     response = requests.post(task_url, json=payload, timeout=10)
     response.raise_for_status()
+    append_udpst_debug_trace(device_id, "acs<-status", f"HTTP {response.status_code} getParameterValues")
 
 
 def poll_udpst_result(acs_api_url: str, device_id: str, timeout_seconds: int = 90, poll_interval_seconds: int = 3) -> bool:
     deadline = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
+    append_udpst_debug_trace(device_id, "poll", f"Polling gestartet (timeout={timeout_seconds}s, interval={poll_interval_seconds}s)")
     while datetime.now(UTC) < deadline:
         queue_get_parameter_values_task(acs_api_url, device_id, UDPST_STATUS_PARAMETER_NAMES)
         device = load_device_detail(acs_api_url, device_id)
         if not device:
+            append_udpst_debug_trace(device_id, "poll", "Gerätedetails leer, nächster Poll")
             continue
         udpst_info = device.get("udpst", {}) if isinstance(device, dict) else {}
         control_state = str(udpst_info.get("control_state", "")).strip()
         result_message = str(udpst_info.get("result_message", "")).strip()
         result_success = str(udpst_info.get("result_success", "")).strip()
         result_json_text = str(udpst_info.get("result_json_text", "")).strip()
-        running_states = {"Requested", "Running", "InProgress", "Active", "Started"}
-        if control_state and control_state not in running_states and (
+        append_udpst_debug_trace(
+            device_id,
+            "poll-snapshot",
+            f"State={control_state or '-'} Success={result_success or '-'} Message={result_message or '-'} JSON={'ja' if bool(result_json_text) else 'nein'}",
+        )
+        if control_state and control_state not in UDPST_RUNNING_STATES and (
             result_message not in {"", "-"} or result_success not in {"", "-"} or result_json_text
         ):
+            append_udpst_debug_trace(device_id, "poll", "Finales Ergebnis erkannt")
             return True
         if poll_interval_seconds > 0:
             time.sleep(poll_interval_seconds)
+    append_udpst_debug_trace(device_id, "poll", "Timeout erreicht ohne finales Ergebnis")
     return False
+
+
+def append_udpst_debug_trace(device_id: str, stage: str, message: str) -> None:
+    entry = {
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+        "stage": stage,
+        "message": message,
+    }
+    with UDPST_DEBUG_LOCK:
+        trace = UDPST_DEBUG_TRACES.setdefault(device_id, [])
+        trace.append(entry)
+        if len(trace) > UDPST_DEBUG_MAX_ENTRIES:
+            del trace[: len(trace) - UDPST_DEBUG_MAX_ENTRIES]
+
+
+def get_udpst_debug_trace(device_id: str) -> list[dict[str, str]]:
+    with UDPST_DEBUG_LOCK:
+        trace = UDPST_DEBUG_TRACES.get(device_id, [])
+        return list(trace)
+
+
+def clear_udpst_debug_trace(device_id: str) -> None:
+    with UDPST_DEBUG_LOCK:
+        UDPST_DEBUG_TRACES[device_id] = []
 
 
 def check_udpst_server_running(host: str, port: int) -> bool:

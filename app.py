@@ -637,7 +637,11 @@ def load_devices(acs_api_url: str, status_filter: str) -> list[dict]:
     return rows
 
 
-def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
+def load_device_detail(
+    acs_api_url: str,
+    device_id: str,
+    monitor_target: dict[str, object] | None = None,
+) -> dict | None:
     projection = quote(",".join(DEVICE_DETAIL_PROJECTION_FIELDS))
     query = quote(json.dumps({"_id": device_id}, separators=(",", ":")))
     url = f"{acs_api_url}/devices/?query={query}&projection={projection}"
@@ -664,7 +668,7 @@ def load_device_detail(acs_api_url: str, device_id: str) -> dict | None:
     wan_cable_info = extract_wan_cable_info(device)
     connection_class = classify_connection(device)
     wifi_radios = extract_wifi_radios(device)
-    udpst_info = extract_udpst_info(device)
+    udpst_info = extract_udpst_info(device, monitor_target=monitor_target)
 
     wan_common_rows = build_info_rows(
         wan_common_info,
@@ -1191,7 +1195,10 @@ def extract_wifi_radios(device: dict) -> list[dict[str, str]]:
     return radios
 
 
-def extract_udpst_info(device: dict) -> dict[str, object]:
+def extract_udpst_info(
+    device: dict,
+    monitor_target: dict[str, object] | None = None,
+) -> dict[str, object]:
     raw_json_result = get_nested_acs_value(
         device, ["InternetGatewayDevice", "X_AVM-DE_DiagnosticTools", "IPLayerCapacity", "Result", "Result"]
     ) or ""
@@ -1206,8 +1213,12 @@ def extract_udpst_info(device: dict) -> dict[str, object]:
     summary = extract_udpst_summary(parsed_json_result)
     debug_details = build_udpst_debug_details(raw_json_result, parsed_json_result, chart_points, incremental_chart, run_context, freshness)
 
-    config_model = AppConfig.query.first()
-    monitor_target = resolve_udpst_monitor_target(config_model)
+    if monitor_target is None:
+        try:
+            config_model = AppConfig.query.first()
+        except RuntimeError:
+            config_model = None
+        monitor_target = resolve_udpst_monitor_target(config_model)
 
     return {
         "test_host": get_nested_acs_value(
@@ -1477,7 +1488,7 @@ def run_udpst_ajax_job(
 ) -> None:
     try:
         update_udpst_ajax_job(job_id, state="running", phase=1, progress=10, status_text="Aktuelle ACS-Konfiguration wird gelesen")
-        device = load_device_detail(acs_api_url, device_id)
+        device = load_device_detail(acs_api_url, device_id, monitor_target=monitor_target)
         if not device:
             finish_udpst_ajax_job(job_id, "failed", error="Gerät wurde im ACS nicht gefunden.", progress=100)
             return
@@ -1526,7 +1537,7 @@ def run_udpst_ajax_job(
         else:
             update_udpst_ajax_job(job_id, phase=3, progress=35, status_text="Config bereits korrekt, kein Schreibvorgang nötig")
 
-        refreshed = load_device_detail(acs_api_url, device_id)
+        refreshed = load_device_detail(acs_api_url, device_id, monitor_target=monitor_target)
         udpst_ref = refreshed.get("udpst", {}) if isinstance(refreshed, dict) else {}
         interval_decimal = to_decimal(udpst_ref.get("test_interval_secs"))
         if interval_decimal is None or interval_decimal <= 0:
@@ -1554,7 +1565,7 @@ def run_udpst_ajax_job(
             device_id,
             ["InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Message"],
         )
-        result_device = load_device_detail(acs_api_url, device_id)
+        result_device = load_device_detail(acs_api_url, device_id, monitor_target=monitor_target)
         result_udpst = result_device.get("udpst", {}) if isinstance(result_device, dict) else {}
         result_message = str(result_udpst.get("result_message") or "").strip()
 
@@ -1577,7 +1588,7 @@ def run_udpst_ajax_job(
             device_id,
             ["InternetGatewayDevice.X_AVM-DE_DiagnosticTools.IPLayerCapacity.Result.Result"],
         )
-        final_device = load_device_detail(acs_api_url, device_id)
+        final_device = load_device_detail(acs_api_url, device_id, monitor_target=monitor_target)
         final_udpst = final_device.get("udpst", {}) if isinstance(final_device, dict) else {}
         result_result = str(final_udpst.get("result_json_text") or "").strip()
         if not result_result:

@@ -153,6 +153,8 @@
                   <dd class="col-sm-7">{{ device.udpst.result_success }}</dd>
                   <dt class="col-sm-5">Result.Message</dt>
                   <dd class="col-sm-7">{{ device.udpst.result_message }}</dd>
+                  <dt class="col-sm-5">TestIntervalSecs</dt>
+                  <dd class="col-sm-7">{{ device.udpst.test_interval_secs }} s</dd>
                 </dl>
                 <form method="post" action="{{ url_for('device_udpst_action', device_id=device.device_id) }}">
                   <input type="hidden" name="action" value="run_udpst_test">
@@ -198,7 +200,7 @@
             <p class="text-muted">Noch keine Kommunikations-Logs vorhanden. Nach dem Start sind hier sofort die ACS-Tasks sichtbar.</p>
           {% endif %}
 
-          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (IncrementalResult)</h3>
+          <h3 class="h6 text-muted mb-2">Grafische Ausgabe (alle numerischen Werte aus Result.Result)</h3>
           {% if device.udpst.chart_points %}
             <div class="vstack gap-2 mb-3">
               {% for point in device.udpst.chart_points %}
@@ -215,7 +217,7 @@
               {% endfor %}
             </div>
           {% else %}
-            <p class="text-muted">Noch keine verwertbaren IncrementalResult-Daten verfügbar.</p>
+            <p class="text-muted">Noch keine numerischen Werte in Result.Result verfügbar.</p>
           {% endif %}
 
           <h3 class="h6 text-muted mb-2">Summary</h3>
